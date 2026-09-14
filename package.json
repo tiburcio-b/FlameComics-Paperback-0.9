@@ -1,6 +1,6 @@
 {
   "name": "btninja Paperback 0.9",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Paperback 0.9 extensions for FlameComics, QiManga, and MangaK.",
   "private": true,
   "type": "module",

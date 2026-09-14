@@ -4,7 +4,7 @@ import { ContentRating, SourceIntents } from "@paperback/types";
 export default {
   name: "QiManga",
   description: "Extension that pulls manga, manhwa, and manhua from QiManga.",
-  version: "1.0.4",
+  version: "1.0.5",
   icon: "icon.png",
   language: "en",
   contentRating: ContentRating.EVERYONE,

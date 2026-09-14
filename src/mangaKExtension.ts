@@ -38,8 +38,7 @@ class MangaKInterceptor extends PaperbackInterceptor {
       ...request,
       headers: {
         ...(request.headers ?? {}),
-        referer: `${MANGAK_DOMAIN}/home`,
-        origin: MANGAK_DOMAIN,
+        referer: `${MANGAK_DOMAIN}/`,
         "user-agent": await Application.getDefaultUserAgent()
       }
     };

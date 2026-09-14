@@ -271,4 +271,66 @@ describe("MangaK parser", () => {
       metadata: { page: 2 }
     });
   });
+  it("keeps titles that are missing a cover instead of emptying the results", () => {
+    const payload = {
+      props: {
+        pageProps: {
+          ssrItems: [
+            { slug: "no-cover", name: "No Cover", status: "ONGOING" },
+            {
+              slug: "with-cover",
+              name: "With Cover",
+              status: "ONGOING",
+              cover: "https://rx.resmk.org/covers/x.webp"
+            }
+          ],
+          ssrPagination: { page: 1, has_next: false }
+        }
+      }
+    };
+
+    expect(mapMangaKSearchResults(payload).items.map((item) => item.mangaId)).toEqual([
+      "no-cover",
+      "with-cover"
+    ]);
+  });
+
+  it("resolves relative covers and unwraps the Next.js image optimizer", () => {
+    const payload = {
+      props: {
+        pageProps: {
+          ssrItems: [
+            { slug: "a", name: "Relative", cover: "/covers/a.webp" },
+            {
+              slug: "b",
+              name: "Optimized",
+              cover: "/_next/image?url=https%3A%2F%2Frx.resmk.org%2Fcovers%2Fb.webp&w=384&q=75"
+            },
+            { slug: "c", name: "Renamed", thumbnail: "//rx.resmk.org/covers/c.webp" }
+          ],
+          ssrPagination: { page: 1, has_next: false }
+        }
+      }
+    };
+
+    expect(mapMangaKSearchResults(payload).items.map((item) => item.imageUrl)).toEqual([
+      "https://mangak.io/covers/a.webp",
+      "https://rx.resmk.org/covers/b.webp",
+      "https://rx.resmk.org/covers/c.webp"
+    ]);
+  });
+
+  it("reads search results from alternate page prop containers", () => {
+    const entry = { slug: "d", name: "Found", cover: "https://rx.resmk.org/covers/d.webp" };
+
+    for (const pageProps of [
+      { items: [entry] },
+      { results: [entry] },
+      { data: { items: [entry] } }
+    ]) {
+      expect(
+        mapMangaKSearchResults({ props: { pageProps } }).items.map((item) => item.mangaId)
+      ).toEqual(["d"]);
+    }
+  });
 });

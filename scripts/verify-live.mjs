@@ -30,11 +30,23 @@ import {
 const FLAME_DOMAIN = "https://flamecomics.xyz";
 const QIMANGA_DOMAIN = "https://qimanga.com";
 
+/** QiManga's API is called cross-origin, exactly as the extension calls it. */
 async function fetchJson(url) {
+  return fetchJsonWithHeaders(url, {
+    "origin": QIMANGA_DOMAIN,
+    "referer": `${QIMANGA_DOMAIN}/`
+  });
+}
+
+/** Flame's data routes are same-origin documents: referer only, no origin. */
+async function fetchFlameJson(url) {
+  return fetchJsonWithHeaders(url, { "referer": `${FLAME_DOMAIN}/` });
+}
+
+async function fetchJsonWithHeaders(url, headers) {
   const response = await fetch(url, {
     headers: {
-      "origin": QIMANGA_DOMAIN,
-      "referer": `${QIMANGA_DOMAIN}/`,
+      ...headers,
       "user-agent": "Paperback-Repository-Verification/1.0"
     }
   });
@@ -47,8 +59,7 @@ async function fetchJson(url) {
 async function fetchMangaKPage(path) {
   const response = await fetch(`${MANGAK_DOMAIN}${path}`, {
     headers: {
-      "origin": MANGAK_DOMAIN,
-      "referer": `${MANGAK_DOMAIN}/home`,
+      "referer": `${MANGAK_DOMAIN}/`,
       "user-agent": "Paperback-Repository-Verification/1.0"
     }
   });
@@ -56,6 +67,32 @@ async function fetchMangaKPage(path) {
     throw new Error(`GET ${MANGAK_DOMAIN}${path} failed with ${response.status}`);
   }
   return extractMangaKNextData(await response.text());
+}
+
+/**
+ * A broken thumbnail is invisible in a payload check: the URL parses fine and
+ * only fails when something actually fetches it. So fetch it.
+ */
+async function assertImagesLoad(source, urls) {
+  for (const url of urls.filter(Boolean)) {
+    const response = await fetch(url, {
+      method: "GET",
+      headers: {
+        "user-agent": "Paperback-Repository-Verification/1.0"
+      }
+    });
+
+    if (!response.ok) {
+      throw new Error(`${source} image ${url} responded with ${response.status}`);
+    }
+
+    const contentType = response.headers.get("content-type") ?? "";
+    if (!contentType.startsWith("image/")) {
+      throw new Error(`${source} image ${url} returned ${contentType || "no content type"}`);
+    }
+
+    await response.arrayBuffer();
+  }
 }
 
 async function main() {
@@ -66,7 +103,7 @@ async function main() {
   }).then((response) => response.text());
   const buildId = extractBuildId(homepage);
 
-  const indexPayload = await fetchJson(
+  const indexPayload = await fetchFlameJson(
     `${FLAME_DOMAIN}/_next/data/${buildId}/index.json`
   );
   const sections = mapDiscoverSections(indexPayload);
@@ -75,7 +112,7 @@ async function main() {
   }
 
   const firstManga = sections.find((section) => section.items.length > 0).items[0];
-  const seriesPayload = await fetchJson(
+  const seriesPayload = await fetchFlameJson(
     `${FLAME_DOMAIN}/_next/data/${buildId}/series/${firstManga.mangaId}.json?id=${firstManga.mangaId}`
   );
   const mangaDetails = mapMangaDetails(firstManga.mangaId, seriesPayload);
@@ -83,10 +120,14 @@ async function main() {
   if (!mangaDetails.mangaInfo.primaryTitle || chapters.length === 0) {
     throw new Error("Live series details did not produce title and chapters");
   }
+  await assertImagesLoad("flameComics", [
+    mangaDetails.mangaInfo.thumbnailUrl,
+    ...sections.flatMap((section) => section.items.slice(0, 1).map((item) => item.imageUrl))
+  ]);
 
   const chapter = chapters[0];
   const token = findChapterToken(chapter.chapterId, seriesPayload);
-  const chapterPayload = await fetchJson(
+  const chapterPayload = await fetchFlameJson(
     `${FLAME_DOMAIN}/_next/data/${buildId}/series/${firstManga.mangaId}/${token}.json?id=${firstManga.mangaId}&token=${token}`
   );
   const chapterDetails = mapChapterDetails(firstManga.mangaId, token, chapterPayload);
@@ -94,12 +135,15 @@ async function main() {
     throw new Error("Live chapter details did not produce page URLs");
   }
 
-  const searchPayload = await fetchJson(
-    `${FLAME_DOMAIN}/_next/data/${buildId}/browse.json?search=solo`
+  const searchPayload = await fetchFlameJson(
+    `${FLAME_DOMAIN}/_next/data/${buildId}/browse.json`
   );
   const searchResults = mapSearchResults({ title: "solo" }, searchPayload);
   if (searchResults.items.length === 0) {
     throw new Error("Live search did not produce results");
+  }
+  if (searchResults.items.some((item) => !item.imageUrl.startsWith("http"))) {
+    throw new Error("Live search produced results without absolute cover URLs");
   }
 
   const qiHomePayload = await fetchJson(`${QIMANGA_API_DOMAIN}/v1/home`);
@@ -135,6 +179,10 @@ async function main() {
   if (qiChapterDetails.pages.length === 0) {
     throw new Error("Live QiManga chapter details did not produce page URLs");
   }
+  await assertImagesLoad("qiManga", [
+    qiMangaDetails.mangaInfo.thumbnailUrl,
+    qiNewItems.items[0].imageUrl
+  ]);
 
   const qiSearchPayload = await fetchJson(
     `${QIMANGA_API_DOMAIN}/v1/series/search?q=immortal&page=1&perPage=20`
@@ -179,6 +227,10 @@ async function main() {
   if (mangaKChapterDetails.pages.length === 0) {
     throw new Error("Live MangaK chapter details did not produce page URLs");
   }
+  await assertImagesLoad("mangaK", [
+    mangaKMangaDetails.mangaInfo.thumbnailUrl,
+    mangaKLatestItems.items[0].imageUrl
+  ]);
 
   const mangaKSearchPayload = await fetchMangaKPage("/search?keyword=immortal&page=1");
   const mangaKSearchResults = mapMangaKSearchResults(mangaKSearchPayload);

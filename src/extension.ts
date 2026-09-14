@@ -8,6 +8,7 @@ import {
   mapDiscoverSectionList,
   mapMangaDetails,
   mapSearchResults,
+  type SearchPageMetadata,
   type SearchQuery,
   type SourceMangaRef
 } from "./flameParser";
@@ -41,7 +42,6 @@ class FlameComicsInterceptor extends PaperbackInterceptor {
       headers: {
         ...(request.headers ?? {}),
         referer: `${FLAME_DOMAIN}/`,
-        origin: `${FLAME_DOMAIN}/`,
         "user-agent": await Application.getDefaultUserAgent()
       }
     };
@@ -70,8 +70,8 @@ export class FlameComicsExtension {
   private buildId = "";
   private cookieStorageInterceptor?: CookieStorageInterceptor;
   private globalRateLimiter = new BasicRateLimiter("flamecomics-rate-limiter", {
-    numberOfRequests: 8,
-    bufferInterval: 1,
+    numberOfRequests: 2,
+    bufferInterval: 2,
     ignoreImages: true
   });
   private flameComicsInterceptor = new FlameComicsInterceptor("flamecomics");
@@ -125,11 +125,9 @@ export class FlameComicsExtension {
     return mapChapterDetails(mangaId, token, chapterPayload);
   }
 
-  async getSearchResults(query: SearchQuery, _metadata?: unknown) {
-    const payload = await this.fetchJsonWithBuildId(
-      `browse.json?search=${encodeURIComponent(query.title ?? "")}`
-    );
-    return mapSearchResults(query, payload);
+  async getSearchResults(query: SearchQuery, metadata?: SearchPageMetadata) {
+    const payload = await this.fetchJsonWithBuildId("browse.json");
+    return mapSearchResults(query, payload, metadata?.page ?? 1);
   }
 
   async saveCloudflareBypassCookies(cookies: Cookie[] = []) {

@@ -258,4 +258,54 @@ describe("QiManga parser", () => {
       metadata: undefined
     });
   });
+  it("resolves relative covers and reads renamed cover fields", () => {
+    const payload = {
+      data: [
+        { slug: "a", title: "Absolute", cover: "https://media.qimanga.com/a.webp" },
+        { slug: "b", title: "Relative", cover: "/uploads/b.webp" },
+        { slug: "c", title: "Renamed", coverUrl: "/uploads/c.webp" },
+        { slug: "d", title: "Wrapped", cover: { url: "/uploads/d.webp" } }
+      ]
+    };
+
+    expect(mapQiSearchResults(payload).items.map((item) => item.imageUrl)).toEqual([
+      "https://media.qimanga.com/a.webp",
+      "https://api.qimanga.com/uploads/b.webp",
+      "https://api.qimanga.com/uploads/c.webp",
+      "https://api.qimanga.com/uploads/d.webp"
+    ]);
+  });
+
+  it("keeps a series that has no cover at all", () => {
+    const payload = { data: [{ slug: "e", title: "No Cover" }] };
+
+    expect(mapQiSearchResults(payload).items).toEqual([
+      {
+        mangaId: "e",
+        title: "No Cover",
+        imageUrl: "",
+        subtitle: "",
+        contentRating: "SAFE"
+      }
+    ]);
+  });
+
+  it("reads search results from alternate response containers", () => {
+    const entry = { slug: "f", title: "Found", cover: "https://media.qimanga.com/f.webp" };
+
+    for (const payload of [
+      { results: [entry] },
+      { items: [entry] },
+      { series: [entry] },
+      [entry]
+    ]) {
+      expect(mapQiSearchResults(payload).items.map((item) => item.mangaId)).toEqual(["f"]);
+    }
+  });
+
+  it("falls back to the numeric id when a series has no slug", () => {
+    const payload = { data: [{ id: 1229, title: "Id Only" }] };
+
+    expect(mapQiSearchResults(payload).items[0].mangaId).toBe("1229");
+  });
 });

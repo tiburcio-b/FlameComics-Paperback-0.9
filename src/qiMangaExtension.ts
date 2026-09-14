@@ -32,14 +32,21 @@ type ChapterRef = {
   sourceManga: QiSourceMangaRef;
 };
 
+const MAX_CHAPTER_PAGES = 200;
+const IMAGE_URL_PATTERN = /\.(avif|gif|jpeg|jpg|jxl|png|webp)(\?|$)/i;
+
 class QiMangaInterceptor extends PaperbackInterceptor {
   async interceptRequest(request: Request): Promise<Request> {
+    const isImage = IMAGE_URL_PATTERN.test(request.url);
+
     return {
       ...request,
       headers: {
         ...(request.headers ?? {}),
         referer: `${QIMANGA_DOMAIN}/`,
-        origin: QIMANGA_DOMAIN,
+        // Browsers send Origin for the XHR API calls but never for image
+        // loads; sending it anyway is a cheap way to earn a CDN 403.
+        ...(isImage ? {} : { origin: QIMANGA_DOMAIN }),
         "user-agent": await Application.getDefaultUserAgent()
       }
     };
@@ -117,7 +124,9 @@ export class QiMangaExtension {
       chapters.push(...this.payloadData(payload));
 
       const nextPage = this.nextPage(payload);
-      if (!nextPage) {
+      // Only follow a cursor that actually advances, so a server that keeps
+      // echoing the current page cannot spin this loop forever.
+      if (nextPage <= page || page >= MAX_CHAPTER_PAGES) {
         break;
       }
       page = nextPage;

@@ -142,4 +142,54 @@ describe("FlameComics extension runtime", () => {
       }
     });
   });
+  it("requests the plain browse document for search and pages through it", async () => {
+    const series = Array.from({ length: 22 }, (_, index) => ({
+      series_id: index + 1,
+      title: `Series ${index + 1}`,
+      status: "Ongoing",
+      cover: "thumbnail.webp",
+      last_edit: 7
+    }));
+    const routes = {
+      "https://flamecomics.xyz": {
+        body: `<script id="__NEXT_DATA__">{"buildId":"fresh"}</script>`
+      },
+      "https://flamecomics.xyz/_next/data/fresh/browse.json": {
+        body: JSON.stringify({ pageProps: { series } })
+      }
+    };
+    const { calls } = installFakeApplication(routes);
+
+    const extension = new FlameComicsExtension();
+    const first = await extension.getSearchResults({ title: "series" }, undefined);
+
+    // No `search` query param: the data route is a prerendered document and an
+    // unexpected param risks a 404 that would surface as a failed search.
+    expect(calls).toContain("https://flamecomics.xyz/_next/data/fresh/browse.json");
+    expect(
+      calls.some((url) => url.includes("browse.json?"))
+    ).toBe(false);
+    expect(first.items).toHaveLength(20);
+    expect(first.metadata).toEqual({ page: 2 });
+
+    const second = await extension.getSearchResults({ title: "series" }, { page: 2 });
+    expect(second.items).toHaveLength(2);
+    expect(second.metadata).toBeUndefined();
+  });
+
+  it("sends a referer and user agent without a malformed origin header", async () => {
+    installFakeApplication({});
+    const extension = new FlameComicsExtension();
+
+    const request = await extension.interceptRequest({
+      url: "https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp",
+      method: "GET"
+    });
+
+    expect(request.headers).toEqual({
+      referer: "https://flamecomics.xyz/",
+      "user-agent": "Paperback-Test"
+    });
+    expect(request.headers).not.toHaveProperty("origin");
+  });
 });

@@ -31,6 +31,7 @@ https://btninja.github.io/FlameComics-Paperback-0.9
 
 - `src/extension.ts`: FlameComics runtime extension
 - `src/flameParser.ts`: FlameComics parser helpers
+- `src/urlUtils.ts`: shared cover/page URL normalisation used by all three parsers
 - `src/qiMangaExtension.ts`: QiManga runtime extension
 - `src/qiMangaParser.ts`: QiManga parser helpers
 - `src/mangaKExtension.ts`: MangaK runtime extension
@@ -84,53 +85,39 @@ The live payloads include homepage sections, series details, chapter lists, read
 
 ## Verification
 
-Last full verification command:
-
 ```bash
-npm run check
+npm test -- --run   # unit + parser + bundle contract tests
+npm run build       # paperback-cli bundle into dist/0.9 and dist/0.9/stable
+npm run verify:live # live smoke test against all three sites
 ```
 
-Last observed result:
+`npm run check` runs all three in sequence.
 
-```text
-10 test files passed
-32 tests passed
-Built FlameComics, QiManga, MangaK at / and /stable
-Live verifier:
-  flameComics:
-    buildId: daQGrsf8dVsqbTg0CzROB
-    sectionCount: 3
-    sampledManga: Omniscient Reader's Viewpoint
-    sampledChapters: 312
-    sampledPages: 17
-    searchResults: 3
-  qiManga:
-    sectionCount: 5
-    sampledManga: Unraveling Memories: The Trauma Cleaner
-    sampledChapters: 18
-    sampledPages: 11
-    searchResults: 9
-  mangaK:
-    sectionCount: 5
-    sampledManga: I, The Invincible Villain Master With My Apprentices (Colored)
-    sampledChapters: 50
-    sampledPages: 62
-    searchResults: 24
-```
+`verify:live` now also fetches the cover URLs the parsers produce and asserts
+each one returns an `image/*` response. A thumbnail that 404s or returns HTML
+is invisible in a payload-shape check and only shows up in the app, so the
+verifier fetches them.
 
-Additional local checks confirmed:
+### Cover and search notes
 
-- `dist/0.9/versioning.json` lists `FlameComics`, `QiManga`, and `MangaK`
-- `dist/0.9/stable/versioning.json` lists `FlameComics`, `QiManga`, and `MangaK`
-- `dist/0.9/metafile.json` is not emitted, so the deployed root cannot be detected as a legacy repo
-- `dist/0.9/stable/QiManga/index.js` is emitted
-- `dist/0.9/stable/QiManga/info.json` is emitted
-- `dist/0.9/stable/MangaK/index.js` is emitted
-- `dist/0.9/stable/MangaK/info.json` is emitted
-- `dist/0.9/stable/MangaK/index.js` starts with the native 0.9 wrapper shape `var source=(function(`
-- The local install page lists all sources
-- Live QiManga API details, chapter list, chapter pages, and search respond as expected
-- Live MangaK details, chapter list, chapter pages, and search respond as expected
+FlameComics cover URLs are
+`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<cover>?<last_edit>`
+and chapter pages are
+`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<token>/<name>?<release_date>`.
+The bare trailing query value is a cache-buster, not a named parameter.
+
+FlameComics search reads `_next/data/<buildId>/browse.json` with **no** query
+parameters: that route is a prerendered document containing the whole
+catalogue, and the extension filters and pages it locally over `title` plus
+`altTitles`. Sending a `search=` parameter risks a 404 from the data route,
+which surfaces in the app as a failed search.
+
+On Flame, `author` and `artist` are lists, and series carry `views` (there is
+no `likes` field).
+
+Requests carry a `Referer` and user agent. `Origin` is only sent for QiManga's
+cross-origin API calls; browsers never send it for image loads, and sending it
+anyway is an easy way to earn a CDN 403 on cover art.
 
 ## Useful Commands
 

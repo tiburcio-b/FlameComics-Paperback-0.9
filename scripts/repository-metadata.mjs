@@ -3,7 +3,7 @@ export const repositoryMetadata = {
   description: "Paperback 0.9 extensions for FlameComics, QiManga, and MangaK."
 };
 
-export const repositoryPackageVersion = "1.0.4";
+export const repositoryPackageVersion = "1.0.5";
 export const sourceCapabilities = [1, 16, 4, 64];
 
 export const builtWithMetadata = {
@@ -15,7 +15,7 @@ export const sourceMetadata = {
   id: "FlameComics",
   name: "FlameComics",
   description: "Extension that pulls manga, manhwa, and manhua from FlameComics.",
-  version: "1.0.5",
+  version: "1.0.6",
   icon: "icon.png",
   language: "en",
   contentRating: "SAFE",
@@ -38,7 +38,7 @@ export const qiMangaSourceMetadata = {
   id: "QiManga",
   name: "QiManga",
   description: "Extension that pulls manga, manhwa, and manhua from QiManga.",
-  version: "1.0.4",
+  version: "1.0.5",
   icon: "icon.png",
   language: "en",
   contentRating: "SAFE",
@@ -61,7 +61,7 @@ export const mangaKSourceMetadata = {
   id: "MangaK",
   name: "MangaK",
   description: "Extension that pulls manga, manhwa, and manhua from MangaK.",
-  version: "1.0.4",
+  version: "1.0.5",
   icon: "icon.png",
   language: "en",
   contentRating: "ADULT",

@@ -1,5 +1,23 @@
+import { pickImageValue, resolveImageUrl } from "./urlUtils";
+
 export const QIMANGA_DOMAIN = "https://qimanga.com";
 export const QIMANGA_API_DOMAIN = "https://api.qimanga.com/api";
+export const QIMANGA_API_ORIGIN = "https://api.qimanga.com";
+
+/**
+ * Cover art has moved between fields on this API before. Read every plausible
+ * spelling rather than handing Paperback an empty thumbnail URL.
+ */
+const COVER_KEYS = [
+  "cover",
+  "coverUrl",
+  "coverImage",
+  "thumbnail",
+  "thumbnailUrl",
+  "image",
+  "imageUrl",
+  "poster"
+];
 
 export const QiDiscoverSectionType = {
   featured: 0,
@@ -102,7 +120,7 @@ export function mapQiMangaDetails(mangaId: string, payload: unknown) {
       shareUrl: `${QIMANGA_DOMAIN}/series/${slug}`,
       primaryTitle: title,
       secondaryTitles: splitAlternativeTitles(series.alternativeTitles),
-      thumbnailUrl: cleanText(series.cover),
+      thumbnailUrl: qiCoverUrl(series),
       ...(author ? { author } : {}),
       ...(artist ? { artist } : {}),
       synopsis: cleanText(series.description),
@@ -153,9 +171,17 @@ export function mapQiChapterDetails(
   chapter: { chapterId: string; sourceManga: QiSourceMangaRef },
   payload: unknown
 ) {
-  const pages = asArray<{ url?: string; order?: number }>(asRecord(payload).images)
-    .sort((left, right) => (left.order ?? 0) - (right.order ?? 0))
-    .map((image) => cleanText(image.url))
+  const result = asRecord(payload);
+  const rawPages = firstArray(result.images, result.pages, result.data);
+  const pages = rawPages
+    .map((image, index) => ({ image, order: pageOrder(image, index) }))
+    .sort((left, right) => left.order - right.order)
+    .map(({ image }) =>
+      resolveImageUrl(
+        typeof image === "string" ? image : pickImageValue(asRecord(image), ["url", "src", "image", "path"]),
+        QIMANGA_API_ORIGIN
+      )
+    )
     .filter(Boolean);
 
   if (pages.length === 0) {
@@ -170,8 +196,17 @@ export function mapQiChapterDetails(
 }
 
 export function mapQiSearchResults(payload: unknown, pageSize = 20) {
+  if (Array.isArray(payload)) {
+    return { items: mapSearchItems(payload as QiSeriesPreview[]), metadata: undefined };
+  }
+
   const result = asRecord(payload);
-  const data = asArray<QiSeriesPreview>(result.data);
+  const data = firstArray<QiSeriesPreview>(
+    result.data,
+    result.results,
+    result.items,
+    result.series
+  );
   const items = mapSearchItems(data);
   const hasNextPage = data.length >= pageSize && result.next;
 
@@ -185,12 +220,24 @@ export function qiSlugFromSourceManga(sourceManga: QiSourceMangaRef) {
   return sourceManga.mangaInfo?.additionalInfo?.slug || sourceManga.mangaId;
 }
 
+export function qiCoverUrl(entry: unknown): string {
+  const value = pickImageValue(asRecord(entry), COVER_KEYS);
+  // Values served by the API are normally absolute; relative ones resolve
+  // against the host that served them.
+  return resolveImageUrl(value, QIMANGA_API_ORIGIN);
+}
+
+/** Series are addressed by slug, with the numeric id as a fallback. */
+export function qiMangaId(entry: QiSeriesPreview): string {
+  return cleanText(entry.slug) || cleanText(entry.id);
+}
+
 function mapProminentItems(series: QiSeriesPreview[]) {
   return series.filter(isReadableSeries).map((entry) => ({
     type: "prominentCarouselItem",
-    mangaId: cleanText(entry.slug),
+    mangaId: qiMangaId(entry),
     title: cleanText(entry.title),
-    imageUrl: cleanText(entry.cover),
+    imageUrl: qiCoverUrl(entry),
     subtitle: metadataSubtitle(entry.type, entry.status),
     contentRating: "SAFE"
   }));
@@ -199,9 +246,9 @@ function mapProminentItems(series: QiSeriesPreview[]) {
 function mapSimpleItems(series: QiSeriesPreview[]) {
   return series.filter(isReadableSeries).map((entry) => ({
     type: "simpleCarouselItem",
-    mangaId: cleanText(entry.slug),
+    mangaId: qiMangaId(entry),
     title: cleanText(entry.title),
-    imageUrl: cleanText(entry.cover),
+    imageUrl: qiCoverUrl(entry),
     subtitle: metadataSubtitle(entry.type, entry.status),
     contentRating: "SAFE"
   }));
@@ -216,10 +263,10 @@ function mapChapterUpdateItems(series: QiSeriesPreview[]) {
 
     return [{
       type: "chapterUpdatesCarouselItem",
-      mangaId: cleanText(entry.slug),
+      mangaId: qiMangaId(entry),
       chapterId: cleanText(chapter.slug),
       title: cleanText(entry.title),
-      imageUrl: cleanText(entry.cover),
+      imageUrl: qiCoverUrl(entry),
       subtitle: `Ch. ${chapter.number ?? 0}`,
       publishDate: new Date(chapter.createdAt ?? 0),
       contentRating: "SAFE"
@@ -229,9 +276,9 @@ function mapChapterUpdateItems(series: QiSeriesPreview[]) {
 
 function mapSearchItems(series: QiSeriesPreview[]) {
   return series.filter(isReadableSeries).map((entry) => ({
-    mangaId: cleanText(entry.slug),
+    mangaId: qiMangaId(entry),
     title: cleanText(entry.title),
-    imageUrl: cleanText(entry.cover),
+    imageUrl: qiCoverUrl(entry),
     subtitle: metadataSubtitle(entry.type, entry.status),
     contentRating: "SAFE"
   }));
@@ -241,7 +288,7 @@ function isReadableSeries(series: QiSeriesPreview) {
   const title = cleanText(series.title);
   return Boolean(
     title &&
-    series.slug &&
+    qiMangaId(series) &&
     !title.startsWith("http://") &&
     !title.startsWith("https://") &&
     series.type !== "NOVEL" &&
@@ -286,6 +333,22 @@ function asRecord(value: unknown): Record<string, any> {
 
 function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+/** First of the candidates that is actually an array. */
+function firstArray<T>(...candidates: unknown[]): T[] {
+  for (const candidate of candidates) {
+    if (Array.isArray(candidate)) {
+      return candidate as T[];
+    }
+  }
+
+  return [];
+}
+
+function pageOrder(image: unknown, index: number): number {
+  const order = asRecord(image).order;
+  return typeof order === "number" && Number.isFinite(order) ? order : index;
 }
 
 function cleanText(value: unknown): string {
