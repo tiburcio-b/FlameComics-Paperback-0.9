@@ -1,20 +1,10 @@
 import { pickImageValue, resolveImageUrl } from "./urlUtils";
 
 export const MANGAK_DOMAIN = "https://mangak.io";
-
-/**
- * MangaK is a Next.js app, so covers can arrive as a bare CDN URL, as a
- * site-relative path, or wrapped in the `/_next/image` optimizer.
- */
-const COVER_KEYS = [
-  "cover",
-  "coverUrl",
-  "thumbnail",
-  "thumbnailUrl",
-  "image",
-  "imageUrl",
-  "poster"
-];
+export const MANGAK_API_DOMAIN = "https://api.mangak.io";
+export const MANGAK_PAGE_SIZE = 24;
+/** The search endpoint rejects long or punctuated queries. */
+export const MANGAK_QUERY_LIMIT = 50;
 
 export const MangaKDiscoverSectionType = {
   featured: 0,
@@ -23,11 +13,22 @@ export const MangaKDiscoverSectionType = {
   chapterUpdates: 3
 } as const;
 
+/**
+ * Discover is built from `/titles/search`, the endpoint the site's own client
+ * uses. The previous homepage-scraping sections no longer exist in the page
+ * payload.
+ */
+export const MANGAK_DISCOVER_SECTIONS = [
+  { id: "popular", title: "Popular This Week", sort: "popular", window: "week" },
+  { id: "latest", title: "Latest Updates", sort: "latest", window: "" }
+] as const;
+
 export type MangaKSourceMangaRef = {
   mangaId: string;
   title?: string;
   mangaInfo?: {
     additionalInfo?: {
+      seriesId?: string;
       slug?: string;
     };
   };
@@ -37,85 +38,99 @@ export type MangaKSearchQuery = {
   title?: string;
 };
 
-type MangaKTitlePreview = {
+export type MangaKPageMetadata = {
+  page: number;
+};
+
+type MangaKItem = {
   id?: string;
-  slug?: string;
   name?: string;
-  altName?: string;
-  altNames?: Array<{ name?: string }>;
   cover?: string;
-  status?: string;
-  displayViews?: string;
-  updatedAt?: string;
-  isAdult?: boolean;
-  latestChapters?: MangaKChapterPreview[];
+  url?: string;
 };
 
-type MangaKChapterPreview = {
-  id?: string;
-  realId?: string;
-  slug?: string;
+type MangaKChapterItem = {
+  url?: string;
   name?: string;
-  date?: string;
-  updatedAt?: string;
   updated_at?: string;
-  chapterNumber?: number;
+  updatedAt?: string;
   chapter_number?: number;
+  chapterNumber?: number;
 };
 
-type MangaKGenre = {
-  id?: string;
-  name?: string;
-  slug?: string;
-};
-
+/**
+ * Pull the Next.js page payload out of a server-rendered document.
+ *
+ * The series and chapter pages still embed `pageProps`; the id of the script
+ * carrying it has moved before, so fall back to locating the object directly.
+ */
 export function extractMangaKNextData(html: string): unknown {
   const scriptMatch = html.match(
     /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/
   );
-  if (!scriptMatch?.[1]) {
-    throw new Error("Unable to find MangaK __NEXT_DATA__ script");
+
+  if (scriptMatch?.[1]) {
+    try {
+      return JSON.parse(decodeHtmlEntities(scriptMatch[1]));
+    } catch {
+      // fall through to the scan below
+    }
   }
 
-  return JSON.parse(decodeHtmlEntities(scriptMatch[1]));
+  const scanned = scanForPageProps(html);
+  if (scanned) {
+    return scanned;
+  }
+
+  throw new Error("Unable to find MangaK page data");
 }
 
 export function mapMangaKDiscoverSections() {
-  return [
-    { id: "featured", title: "Featured", type: MangaKDiscoverSectionType.prominentCarousel },
-    { id: "latest", title: "Recently Updated", type: MangaKDiscoverSectionType.chapterUpdates },
-    { id: "popular", title: "Popular Updates", type: MangaKDiscoverSectionType.simpleCarousel },
-    { id: "trending", title: "Trending", type: MangaKDiscoverSectionType.simpleCarousel },
-    { id: "top-updates", title: "Top Updates", type: MangaKDiscoverSectionType.simpleCarousel }
-  ];
+  return MANGAK_DISCOVER_SECTIONS.map(({ id, title }) => ({
+    id,
+    title,
+    type: MangaKDiscoverSectionType.simpleCarousel
+  }));
 }
 
-export function mapMangaKDiscoverSectionItems(sectionId: string, payload: unknown) {
-  const pageProps = getPageProps(payload);
-  let items: unknown[];
+export function mangaKSortForSection(sectionId: string) {
+  return (
+    MANGAK_DISCOVER_SECTIONS.find((section) => section.id === sectionId) ??
+    MANGAK_DISCOVER_SECTIONS[1]
+  );
+}
 
-  switch (sectionId) {
-    case "featured":
-      items = mapProminentItems(asArray<MangaKTitlePreview>(pageProps.heroItems));
-      break;
-    case "latest":
-      items = mapChapterUpdateItems(asArray<MangaKTitlePreview>(pageProps.latest?.items));
-      break;
-    case "popular":
-      items = mapSimpleItems(asArray<MangaKTitlePreview>(pageProps.popularItems));
-      break;
-    case "trending":
-      items = mapSimpleItems(asArray<MangaKTitlePreview>(pageProps.trendingItems));
-      break;
-    case "top-updates":
-      items = mapSimpleItems(asArray<MangaKTitlePreview>(pageProps.topUpdateItems));
-      break;
-    default:
-      items = [];
-      break;
-  }
+export function mapMangaKDiscoverSectionItems(
+  _sectionId: string,
+  payload: unknown,
+  page = 1
+) {
+  const { items, metadata } = readTitlesPage(payload, page);
 
-  return { items, metadata: undefined };
+  return {
+    items: items.map((entry) => ({
+      type: "simpleCarouselItem",
+      mangaId: mangaKMangaId(entry),
+      title: cleanText(entry.name),
+      imageUrl: mangaKCoverUrl(entry),
+      contentRating: "SAFE"
+    })),
+    metadata
+  };
+}
+
+export function mapMangaKSearchResults(payload: unknown, page = 1) {
+  const { items, metadata } = readTitlesPage(payload, page);
+
+  return {
+    items: items.map((entry) => ({
+      mangaId: mangaKMangaId(entry),
+      title: cleanText(entry.name),
+      imageUrl: mangaKCoverUrl(entry),
+      contentRating: "SAFE"
+    })),
+    metadata
+  };
 }
 
 export function mapMangaKMangaDetails(mangaId: string, payload: unknown) {
@@ -124,19 +139,18 @@ export function mapMangaKMangaDetails(mangaId: string, payload: unknown) {
     throw new Error(`Unable to parse MangaK series ${mangaId}`);
   }
 
-  const slug = cleanText(manga.slug) || mangaId;
-  const authors = asArray<{ name?: string }>(manga.authors)
-    .map((author) => cleanText(author.name))
-    .filter(Boolean);
-  const artists = asArray<{ name?: string }>(manga.artists)
-    .map((artist) => cleanText(artist.name))
-    .filter(Boolean);
-  const genres = asArray<MangaKGenre>(manga.genres);
+  const authors = entityNames(manga.authors);
+  const artists = entityNames(manga.artists);
+  const genres = entityNames(manga.genres).map((name) => ({
+    id: slugify(name),
+    title: name
+  }));
+  const seriesId = cleanText(manga.id);
 
   return {
     mangaId,
     mangaInfo: {
-      shareUrl: `${MANGAK_DOMAIN}/${slug}`,
+      shareUrl: `${MANGAK_DOMAIN}/${mangaId}`,
       primaryTitle: cleanText(manga.name),
       secondaryTitles: alternativeTitles(manga),
       thumbnailUrl: mangaKCoverUrl(manga),
@@ -146,46 +160,41 @@ export function mapMangaKMangaDetails(mangaId: string, payload: unknown) {
       contentRating: manga.isAdult === true ? "ADULT" : "SAFE",
       status: cleanText(manga.status) || "UNKNOWN",
       tagGroups: genres.length > 0
-        ? [
-            {
-              id: "genres",
-              title: "Genres",
-              tags: genres
-                .map((genre) => ({
-                  id: cleanText(genre.slug || genre.id),
-                  title: cleanText(genre.name)
-                }))
-                .filter((genre) => genre.id && genre.title)
-            }
-          ]
+        ? [{ id: "genres", title: "Genres", tags: genres }]
         : [],
       additionalInfo: {
-        seriesId: cleanText(manga.id),
-        slug
+        // The chapter list is keyed by this API id, not by the page slug.
+        seriesId,
+        slug: mangaId
       }
     }
   };
 }
 
+/** Reads `/titles/{id}/chapters`, which replaced the in-page chapter list. */
 export function mapMangaKChapters(
   sourceManga: MangaKSourceMangaRef,
   payload: unknown
 ) {
-  const chapters = asArray<MangaKChapterPreview>(getPageProps(payload).initialManga?.chapters);
+  const result = asRecord(payload);
+  const chapters = firstArray<MangaKChapterItem>(
+    asRecord(result.data).chapters,
+    result.chapters,
+    result.data
+  );
 
   return chapters
-    .filter((chapter) => cleanText(chapter.slug))
+    .filter((chapter) => mangaKChapterId(chapter))
     .sort((left, right) => chapterNumber(left) - chapterNumber(right))
     .map((chapter, index) => ({
-      chapterId: cleanText(chapter.slug),
+      chapterId: mangaKChapterId(chapter),
       sourceManga,
       title: cleanText(chapter.name),
       chapNum: chapterNumber(chapter),
       volume: 0,
-      volumetitle: "",
       langCode: "en",
       sortingIndex: index,
-      publishDate: new Date(chapter.updatedAt ?? chapter.updated_at ?? chapter.date ?? 0)
+      publishDate: new Date(chapter.updated_at ?? chapter.updatedAt ?? 0)
     }));
 }
 
@@ -215,25 +224,31 @@ export function mapMangaKChapterDetails(
   };
 }
 
-export function mapMangaKSearchResults(payload: unknown) {
-  const pageProps = getPageProps(payload);
-  const items = mapSearchItems(
-    firstArray<MangaKTitlePreview>(
-      pageProps.ssrItems,
-      pageProps.items,
-      pageProps.results,
-      asRecord(pageProps.data).items,
-      pageProps.data
-    )
-  );
-  const pagination = asRecord(pageProps.ssrPagination ?? pageProps.pagination);
-  const page = Number(pagination.page ?? 1);
-  const hasNextPage = pagination.has_next === true;
+/** `{ data: { items: [...], pagination: { has_next } } }` */
+export function readTitlesPage(payload: unknown, page = 1) {
+  const result = asRecord(payload);
+  const data = asRecord(result.data);
+  const items = firstArray<MangaKItem>(
+    data.items,
+    result.items,
+    result.results,
+    Array.isArray(result.data) ? result.data : undefined
+  ).filter((entry) => mangaKMangaId(entry) && cleanText(entry.name));
+
+  const pagination = asRecord(data.pagination ?? result.pagination);
+  const hasNext = pagination.has_next === true || pagination.hasNext === true;
+  const currentPage = Number.isFinite(Number(page)) && Number(page) > 0
+    ? Math.floor(Number(page))
+    : 1;
 
   return {
     items,
-    metadata: hasNextPage ? { page: page + 1 } : undefined
+    metadata: hasNext ? ({ page: currentPage + 1 } as MangaKPageMetadata) : undefined
   };
+}
+
+export function mangaKSeriesIdFromSourceManga(sourceManga: MangaKSourceMangaRef) {
+  return cleanText(sourceManga.mangaInfo?.additionalInfo?.seriesId);
 }
 
 export function mangaKSlugFromSourceManga(sourceManga: MangaKSourceMangaRef) {
@@ -241,99 +256,139 @@ export function mangaKSlugFromSourceManga(sourceManga: MangaKSourceMangaRef) {
 }
 
 export function mangaKCoverUrl(entry: unknown): string {
-  return resolveImageUrl(pickImageValue(asRecord(entry), COVER_KEYS), MANGAK_DOMAIN);
+  const value = pickImageValue(asRecord(entry), [
+    "cover",
+    "coverUrl",
+    "thumbnail",
+    "thumbnailUrl",
+    "image",
+    "imageUrl",
+    "poster"
+  ]);
+
+  return resolveImageUrl(value, MANGAK_DOMAIN);
 }
 
-function mapProminentItems(series: MangaKTitlePreview[]) {
-  return series.filter(isReadableTitle).map((entry) => ({
-    type: "prominentCarouselItem",
-    mangaId: cleanText(entry.slug),
-    title: cleanText(entry.name),
-    imageUrl: mangaKCoverUrl(entry),
-    subtitle: subtitle(entry),
-    contentRating: entry.isAdult === true ? "ADULT" : "SAFE"
-  }));
+/** Site-relative path used both as the id and to build the page URL. */
+export function mangaKMangaId(entry: MangaKItem): string {
+  return normalizePath(entry.url) || cleanText(entry.id);
 }
 
-function mapSimpleItems(series: MangaKTitlePreview[]) {
-  return series.filter(isReadableTitle).map((entry) => ({
-    type: "simpleCarouselItem",
-    mangaId: cleanText(entry.slug),
-    title: cleanText(entry.name),
-    imageUrl: mangaKCoverUrl(entry),
-    subtitle: subtitle(entry),
-    contentRating: entry.isAdult === true ? "ADULT" : "SAFE"
-  }));
+export function mangaKChapterId(chapter: MangaKChapterItem): string {
+  return normalizePath(chapter.url);
 }
 
-function mapChapterUpdateItems(series: MangaKTitlePreview[]) {
-  return series.filter(isReadableTitle).flatMap((entry) => {
-    const chapter = asArray<MangaKChapterPreview>(entry.latestChapters)[0];
-    const chapterSlug = cleanText(chapter?.slug);
-    if (!chapterSlug) {
-      return [];
-    }
+export function normalizePath(value: unknown): string {
+  const raw = typeof value === "string" ? value.trim() : "";
+  if (!raw) {
+    return "";
+  }
 
-    return [{
-      type: "chapterUpdatesCarouselItem",
-      mangaId: cleanText(entry.slug),
-      chapterId: chapterSlug,
-      title: cleanText(entry.name),
-      imageUrl: mangaKCoverUrl(entry),
-      subtitle: cleanText(chapter?.name),
-      publishDate: new Date(chapter?.date ?? chapter?.updatedAt ?? chapter?.updated_at ?? 0),
-      contentRating: entry.isAdult === true ? "ADULT" : "SAFE"
-    }];
-  });
+  return raw
+    .replace(/^https?:\/\/[^/]+/i, "")
+    .replace(/^\/+/, "")
+    .replace(/\/+$/, "");
 }
 
-function mapSearchItems(series: MangaKTitlePreview[]) {
-  return series.filter(isReadableTitle).map((entry) => ({
-    mangaId: cleanText(entry.slug),
-    title: cleanText(entry.name),
-    imageUrl: mangaKCoverUrl(entry),
-    subtitle: subtitle(entry),
-    contentRating: entry.isAdult === true ? "ADULT" : "SAFE"
-  }));
-}
-
-function isReadableTitle(series: MangaKTitlePreview) {
-  // A title with no usable cover still reads fine; dropping it here is what
-  // turns a renamed image field into an empty search screen.
-  return Boolean(cleanText(series.slug) && cleanText(series.name));
-}
-
-function subtitle(entry: MangaKTitlePreview) {
-  const status = titleCase(cleanText(entry.status));
-  const views = cleanText(entry.displayViews);
-  return [
-    status,
-    views ? `${views} views` : ""
-  ].filter(Boolean).join(" • ");
-}
-
-function chapterNumber(chapter: MangaKChapterPreview) {
-  const numeric = Number(chapter.chapterNumber ?? chapter.chapter_number);
+function chapterNumber(chapter: MangaKChapterItem): number {
+  const numeric = Number(chapter.chapter_number ?? chapter.chapterNumber);
   if (Number.isFinite(numeric)) {
     return numeric;
   }
 
-  const fromSlug = cleanText(chapter.slug).match(/(\d+(?:[-.]\d+)?)/)?.[1];
+  const fromSlug = mangaKChapterId(chapter).match(/(\d+(?:[-.]\d+)?)\s*$/)?.[1];
   const parsed = Number.parseFloat((fromSlug ?? "0").replace("-", "."));
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+function entityNames(value: unknown): string[] {
+  return asArray<unknown>(value)
+    .map((entry) =>
+      typeof entry === "string" ? cleanText(entry) : cleanText(asRecord(entry).name)
+    )
+    .filter(Boolean);
 }
 
 function alternativeTitles(manga: Record<string, any>) {
   const titles = [
     cleanText(manga.altName),
-    ...asArray<{ name?: string }>(manga.altNames).map((title) => cleanText(title.name))
+    ...entityNames(manga.altNames)
   ].filter(Boolean);
 
   return [...new Set(titles)];
 }
 
+/**
+ * Locate the JSON object holding `pageProps` when it is not in a script we can
+ * address by id, including payloads embedded as escaped JS strings.
+ */
+function scanForPageProps(html: string): unknown {
+  for (const candidate of [html, html.replace(/\\"/g, '"')]) {
+    let index = candidate.indexOf('"pageProps"');
+
+    while (index !== -1) {
+      const start = candidate.lastIndexOf("{", index);
+      if (start !== -1) {
+        const parsed = parseObjectAt(candidate, start);
+        if (parsed && asRecord(parsed).pageProps) {
+          return parsed;
+        }
+      }
+      index = candidate.indexOf('"pageProps"', index + 1);
+    }
+  }
+
+  return undefined;
+}
+
+function parseObjectAt(text: string, start: number): unknown {
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+
+  for (let index = start; index < text.length; index += 1) {
+    const char = text[index];
+
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (inString) {
+      continue;
+    }
+    if (char === "{") {
+      depth += 1;
+    } else if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        try {
+          return JSON.parse(text.slice(start, index + 1));
+        } catch {
+          return undefined;
+        }
+      }
+    }
+  }
+
+  return undefined;
+}
+
 function getPageProps(payload: unknown): Record<string, any> {
-  return asRecord(asRecord(asRecord(payload).props).pageProps);
+  const root = asRecord(payload);
+  const nested = asRecord(asRecord(root.props).pageProps);
+  if (Object.keys(nested).length > 0) {
+    return nested;
+  }
+
+  return asRecord(root.pageProps);
 }
 
 function asRecord(value: unknown): Record<string, any> {
@@ -348,7 +403,6 @@ function asArray<T>(value: unknown): T[] {
   return Array.isArray(value) ? (value as T[]) : [];
 }
 
-/** First of the candidates that is actually an array. */
 function firstArray<T>(...candidates: unknown[]): T[] {
   for (const candidate of candidates) {
     if (Array.isArray(candidate)) {
@@ -357,6 +411,13 @@ function firstArray<T>(...candidates: unknown[]): T[] {
   }
 
   return [];
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 function cleanText(value: unknown): string {
@@ -368,13 +429,6 @@ function cleanText(value: unknown): string {
     .replace(/\s+/g, " ")
     .replace(/\s+([.,!?;:])/g, "$1")
     .trim();
-}
-
-function titleCase(value: string) {
-  return value
-    .toLowerCase()
-    .replace(/_/g, " ")
-    .replace(/\b\w/g, (char) => char.toUpperCase());
 }
 
 function decodeHtmlEntities(value: string) {

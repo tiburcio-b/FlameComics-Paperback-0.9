@@ -47,82 +47,120 @@ afterEach(() => {
 });
 
 describe("QiManga extension runtime", () => {
-  it("fetches all chapter pages before sorting readable chapters", async () => {
+  it("walks every chapter page using totalPages and keeps public chapters", async () => {
+    const chapterUrl = (page: number) =>
+      `https://api.qimanga.com/api/v1/series/sample/chapters?page=${page}&perPage=100&sort=desc`;
+
     const routes = {
-      "https://api.qimanga.com/api/v1/series/sample/chapters?page=1&perPage=30&sort=desc": {
+      [chapterUrl(1)]: {
         body: JSON.stringify({
-          next: 2,
+          totalPages: 2,
+          current: 1,
           data: [
+            { slug: "chapter-2", number: 2, createdAt: "2026-06-02T00:00:00.000Z" },
             {
-              slug: "chapter-2",
-              number: 2,
-              title: null,
-              price: 0,
-              requiresPurchase: false,
-              publishStatus: "PUBLIC",
-              createdAt: "2026-06-02T00:00:00.000Z"
+              slug: "chapter-3",
+              number: 3,
+              requiresPurchase: true,
+              createdAt: "2026-06-03T00:00:00.000Z"
             }
           ]
         })
       },
-      "https://api.qimanga.com/api/v1/series/sample/chapters?page=2&perPage=30&sort=desc": {
+      [chapterUrl(2)]: {
         body: JSON.stringify({
-          next: null,
+          totalPages: 2,
+          current: 2,
           data: [
-            {
-              slug: "chapter-1",
-              number: 1,
-              title: null,
-              price: 0,
-              requiresPurchase: false,
-              publishStatus: "PUBLIC",
-              createdAt: "2026-06-01T00:00:00.000Z"
-            }
+            { slug: "chapter-1", number: 1, createdAt: "2026-06-01T00:00:00.000Z" }
           ]
         })
       }
     };
     const { calls } = installFakeApplication(routes);
 
-    const result = await new QiMangaExtension().getChapters({ mangaId: "sample" });
+    const extension = new QiMangaExtension();
+    const chapters = await extension.getChapters({ mangaId: "sample" });
 
-    expect(result.map((chapter) => chapter.chapterId)).toEqual([
+    expect(calls).toEqual([chapterUrl(1), chapterUrl(2)]);
+    expect(chapters.map((chapter) => chapter.chapterId)).toEqual([
       "chapter-1",
       "chapter-2"
     ]);
-    expect(calls).toEqual([
-      "https://api.qimanga.com/api/v1/series/sample/chapters?page=1&perPage=30&sort=desc",
-      "https://api.qimanga.com/api/v1/series/sample/chapters?page=2&perPage=30&sort=desc"
-    ]);
   });
 
-  it("builds search URLs with pagination metadata", async () => {
-    const routes = {
-      "https://api.qimanga.com/api/v1/series/search?q=immortal&page=3&perPage=20": {
-        body: JSON.stringify({
-          data: [
-            {
-              slug: "forged-immortal",
-              title: "Forged Immortal",
-              cover: "https://media.qimanga.com/forged.webp",
-              type: "MANHUA",
-              status: "DROPPED",
-              redirectUrl: ""
-            }
-          ]
-        })
-      }
-    };
-    const { calls } = installFakeApplication(routes);
+  it("searches the series endpoint and browses it when the query is empty", async () => {
+    const searchUrl =
+      "https://api.qimanga.com/api/v1/series/search?q=immortal&page=1&perPage=20";
+    const browseUrl =
+      "https://api.qimanga.com/api/v1/series?page=1&perPage=20&sort=latest";
+    const payload = JSON.stringify({
+      totalPages: 1,
+      current: 1,
+      data: [{ slug: "a", title: "A", cover: "https://cdn.test/a.webp" }]
+    });
+    const { calls } = installFakeApplication({
+      [searchUrl]: { body: payload },
+      [browseUrl]: { body: payload }
+    });
 
-    const result = await new QiMangaExtension().getSearchResults(
-      { title: "immortal" },
-      { page: 3 }
+    const extension = new QiMangaExtension();
+    await extension.getSearchResults({ title: "immortal" }, undefined);
+    await extension.getSearchResults({ title: "  " }, undefined);
+
+    expect(calls).toEqual([searchUrl, browseUrl]);
+  });
+
+  it("requests discover items with the section's sort value", async () => {
+    const url =
+      "https://api.qimanga.com/api/v1/series?page=1&perPage=20&sort=popular";
+    const { calls } = installFakeApplication({
+      [url]: {
+        body: JSON.stringify({ totalPages: 1, current: 1, data: [] })
+      }
+    });
+
+    const extension = new QiMangaExtension();
+    await extension.getDiscoverSectionItems(
+      { id: "popular", title: "Popular", type: 1 },
+      undefined
     );
 
-    expect(result.items[0]?.mangaId).toBe("forged-immortal");
-    expect(calls).toEqual([
-      "https://api.qimanga.com/api/v1/series/search?q=immortal&page=3&perPage=20"
-    ]);
+    expect(calls).toEqual([url]);
+  });
+
+  it("sends the API fetch headers on data calls but not on images", async () => {
+    installFakeApplication({});
+    const extension = new QiMangaExtension();
+
+    const apiRequest = await extension.interceptRequest({
+      url: "https://api.qimanga.com/api/v1/home",
+      method: "GET"
+    });
+    expect(apiRequest.headers).toMatchObject({
+      accept: "application/json, text/plain, */*",
+      origin: "https://qimanga.com",
+      "sec-fetch-mode": "cors"
+    });
+
+    const imageRequest = await extension.interceptRequest({
+      url: "https://media.qimanga.com/cover.webp",
+      method: "GET"
+    });
+    expect(imageRequest.headers).not.toHaveProperty("origin");
+    expect(imageRequest.headers).toMatchObject({ referer: "https://qimanga.com/" });
+  });
+
+  it("throws a Cloudflare bypass error when a challenge response is detected", async () => {
+    installFakeApplication({});
+    const extension = new QiMangaExtension();
+
+    await expect(
+      extension.interceptResponse(
+        { url: "https://api.qimanga.com/api/v1/home", method: "GET" },
+        { status: 403, headers: { "cf-mitigated": "challenge" } } as any,
+        bytes("")
+      )
+    ).rejects.toMatchObject({ type: "cloudflareError" });
   });
 });

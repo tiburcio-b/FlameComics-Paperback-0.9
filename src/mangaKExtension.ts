@@ -1,13 +1,19 @@
 import {
+  MANGAK_API_DOMAIN,
   MANGAK_DOMAIN,
+  MANGAK_PAGE_SIZE,
+  MANGAK_QUERY_LIMIT,
   extractMangaKNextData,
+  mangaKSeriesIdFromSourceManga,
   mangaKSlugFromSourceManga,
+  mangaKSortForSection,
   mapMangaKChapterDetails,
   mapMangaKChapters,
   mapMangaKDiscoverSectionItems,
   mapMangaKDiscoverSections,
   mapMangaKMangaDetails,
   mapMangaKSearchResults,
+  type MangaKPageMetadata,
   type MangaKSearchQuery,
   type MangaKSourceMangaRef
 } from "./mangaKParser";
@@ -32,14 +38,25 @@ type ChapterRef = {
   sourceManga: MangaKSourceMangaRef;
 };
 
+const IMAGE_URL_PATTERN = /\.(avif|gif|jpeg|jpg|jxl|png|webp)(\?|$)/i;
+
 class MangaKInterceptor extends PaperbackInterceptor {
   async interceptRequest(request: Request): Promise<Request> {
+    const isApi = request.url.startsWith(MANGAK_API_DOMAIN);
+    const isImage = IMAGE_URL_PATTERN.test(request.url);
+
     return {
       ...request,
       headers: {
         ...(request.headers ?? {}),
         referer: `${MANGAK_DOMAIN}/`,
-        "user-agent": await Application.getDefaultUserAgent()
+        "user-agent": await Application.getDefaultUserAgent(),
+        ...(isApi && !isImage
+          ? {
+              accept: "application/json, text/plain, */*",
+              origin: MANGAK_DOMAIN
+            }
+          : {})
       }
     };
   }
@@ -94,9 +111,23 @@ export class MangaKExtension {
     return mapMangaKDiscoverSections();
   }
 
-  async getDiscoverSectionItems(section: DiscoverSection, _metadata?: unknown) {
-    const payload = await this.fetchPage("/home");
-    return mapMangaKDiscoverSectionItems(section.id, payload);
+  async getDiscoverSectionItems(
+    section: DiscoverSection,
+    metadata?: MangaKPageMetadata
+  ) {
+    const page = metadata?.page ?? 1;
+    const { sort, window } = mangaKSortForSection(section.id);
+    const params = new URLSearchParams({
+      sort,
+      page: String(page),
+      limit: String(MANGAK_PAGE_SIZE)
+    });
+    if (window) {
+      params.set("window", window);
+    }
+
+    const payload = await this.fetchApi(`/titles/search?${params.toString()}`);
+    return mapMangaKDiscoverSectionItems(section.id, payload, page);
   }
 
   async getMangaDetails(mangaId: string) {
@@ -105,29 +136,37 @@ export class MangaKExtension {
   }
 
   async getChapters(sourceManga: MangaKSourceMangaRef) {
-    const payload = await this.fetchSeriesPayload(mangaKSlugFromSourceManga(sourceManga));
+    const seriesId = await this.resolveSeriesId(sourceManga);
+    // `cv` is a cache-buster the site sends on every chapter-list call.
+    const payload = await this.fetchApi(
+      `/titles/${encodeURIComponent(seriesId)}/chapters?cv=${Date.now()}`
+    );
     return mapMangaKChapters(sourceManga, payload);
   }
 
   async getChapterDetails(chapter: ChapterRef) {
-    const slug = mangaKSlugFromSourceManga(chapter.sourceManga);
-    const payload = await this.fetchPage(
-      `/${encodeURIComponent(slug)}/${encodeURIComponent(chapter.chapterId)}`
-    );
+    const payload = await this.fetchPage(`/${chapter.chapterId}`);
     return mapMangaKChapterDetails(chapter, payload);
   }
 
-  async getSearchResults(query: MangaKSearchQuery, metadata?: { page?: number }) {
+  async getSearchResults(query: MangaKSearchQuery, metadata?: MangaKPageMetadata) {
     const page = metadata?.page ?? 1;
-    const title = (query.title ?? "").trim();
-    const params = new URLSearchParams();
-    if (title) {
-      params.set("keyword", title);
-    }
-    params.set("page", String(page));
+    const params = new URLSearchParams({
+      page: String(page),
+      limit: String(MANGAK_PAGE_SIZE)
+    });
 
-    const payload = await this.fetchPage(`/search?${params.toString()}`);
-    return mapMangaKSearchResults(payload);
+    // The endpoint rejects punctuation and over-long queries.
+    const title = (query.title ?? "")
+      .replace(/[^\p{L}\p{N} ]/gu, "")
+      .trim()
+      .slice(0, MANGAK_QUERY_LIMIT);
+    if (title) {
+      params.set("q", title);
+    }
+
+    const payload = await this.fetchApi(`/titles/search?${params.toString()}`);
+    return mapMangaKSearchResults(payload, page);
   }
 
   async saveCloudflareBypassCookies(cookies: Cookie[] = []) {
@@ -161,8 +200,41 @@ export class MangaKExtension {
     return this.cookieStorageInterceptor;
   }
 
+  /**
+   * Chapters are keyed by the API's series id. It normally rides along in the
+   * saved manga, but a title restored from the library may predate that, so
+   * fall back to reading it off the series page.
+   */
+  private async resolveSeriesId(sourceManga: MangaKSourceMangaRef) {
+    const known = mangaKSeriesIdFromSourceManga(sourceManga);
+    if (known) {
+      return known;
+    }
+
+    const slug = mangaKSlugFromSourceManga(sourceManga);
+    const payload = await this.fetchSeriesPayload(slug);
+    const seriesId = mapMangaKMangaDetails(slug, payload).mangaInfo.additionalInfo
+      .seriesId;
+
+    if (!seriesId) {
+      throw new Error(`Unable to resolve the MangaK series id for ${slug}`);
+    }
+
+    return seriesId;
+  }
+
   private async fetchSeriesPayload(mangaId: string) {
-    return this.fetchPage(`/${encodeURIComponent(mangaId)}`);
+    return this.fetchPage(`/${mangaId}`);
+  }
+
+  private async fetchApi(path: string): Promise<unknown> {
+    const response = await this.schedule({
+      url: `${MANGAK_API_DOMAIN}${path}`,
+      method: "GET"
+    });
+
+    this.assertOk(response);
+    return JSON.parse(response.body);
   }
 
   private async fetchPage(path: string): Promise<unknown> {

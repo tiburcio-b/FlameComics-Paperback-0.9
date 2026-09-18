@@ -3,21 +3,8 @@ import { pickImageValue, resolveImageUrl } from "./urlUtils";
 export const QIMANGA_DOMAIN = "https://qimanga.com";
 export const QIMANGA_API_DOMAIN = "https://api.qimanga.com/api";
 export const QIMANGA_API_ORIGIN = "https://api.qimanga.com";
-
-/**
- * Cover art has moved between fields on this API before. Read every plausible
- * spelling rather than handing Paperback an empty thumbnail URL.
- */
-const COVER_KEYS = [
-  "cover",
-  "coverUrl",
-  "coverImage",
-  "thumbnail",
-  "thumbnailUrl",
-  "image",
-  "imageUrl",
-  "poster"
-];
+export const QIMANGA_PAGE_SIZE = 20;
+export const QIMANGA_CHAPTER_PAGE_SIZE = 100;
 
 export const QiDiscoverSectionType = {
   featured: 0,
@@ -25,6 +12,17 @@ export const QiDiscoverSectionType = {
   prominentCarousel: 2,
   chapterUpdates: 3
 } as const;
+
+/**
+ * Sort values the `/series` endpoint accepts. Discover is built from this
+ * endpoint rather than `/home`: it is the one the site's own clients use, it
+ * paginates, and it returns the same series shape as search.
+ */
+export const QI_DISCOVER_SECTIONS = [
+  { id: "popular", title: "Popular", sort: "popular" },
+  { id: "latest", title: "Latest Updates", sort: "latest" },
+  { id: "newest", title: "New Series", sort: "newest" }
+] as const;
 
 export type QiSourceMangaRef = {
   mangaId: string;
@@ -38,7 +36,10 @@ export type QiSourceMangaRef = {
 
 export type QiSearchQuery = {
   title?: string;
-  metadata?: Array<{ id?: string; value?: string }>;
+};
+
+export type QiPageMetadata = {
+  page: number;
 };
 
 type QiSeriesPreview = {
@@ -49,7 +50,6 @@ type QiSeriesPreview = {
   type?: string;
   status?: string;
   redirectUrl?: string | null;
-  chapters?: QiChapterPreview[];
 };
 
 type QiChapterPreview = {
@@ -58,7 +58,6 @@ type QiChapterPreview = {
   title?: string | null;
   price?: number;
   requiresPurchase?: boolean;
-  publishStatus?: string;
   createdAt?: string;
 };
 
@@ -69,41 +68,38 @@ type QiGenre = {
 };
 
 export function mapQiDiscoverSections() {
-  return [
-    { id: "featured", title: "Featured", type: QiDiscoverSectionType.prominentCarousel },
-    { id: "popular", title: "Popular Today", type: QiDiscoverSectionType.chapterUpdates },
-    { id: "pinned", title: "Pinned", type: QiDiscoverSectionType.chapterUpdates },
-    { id: "new", title: "New Series", type: QiDiscoverSectionType.chapterUpdates },
-    { id: "editors-pick", title: "Editor's Pick", type: QiDiscoverSectionType.simpleCarousel }
-  ];
+  return QI_DISCOVER_SECTIONS.map(({ id, title }) => ({
+    id,
+    title,
+    type: QiDiscoverSectionType.simpleCarousel
+  }));
 }
 
-export function mapQiDiscoverSectionItems(sectionId: string, payload: unknown) {
-  const home = asRecord(payload);
-  let items: unknown[];
+export function qiSortForSection(sectionId: string): string {
+  return (
+    QI_DISCOVER_SECTIONS.find((section) => section.id === sectionId)?.sort ??
+    "latest"
+  );
+}
 
-  switch (sectionId) {
-    case "featured":
-      items = mapProminentItems(asArray<QiSeriesPreview>(home.banners));
-      break;
-    case "popular":
-      items = mapChapterUpdateItems(asArray<QiSeriesPreview>(home.popular));
-      break;
-    case "pinned":
-      items = mapChapterUpdateItems(asArray<QiSeriesPreview>(home.pinned));
-      break;
-    case "new":
-      items = mapChapterUpdateItems(asArray<QiSeriesPreview>(home.newSeries));
-      break;
-    case "editors-pick":
-      items = mapSimpleItems(asArray<QiSeriesPreview>(home.editorsPick));
-      break;
-    default:
-      items = [];
-      break;
-  }
+export function mapQiDiscoverSectionItems(
+  _sectionId: string,
+  payload: unknown,
+  page = 1
+) {
+  const { series, metadata } = readSeriesPage(payload, page);
 
-  return { items, metadata: undefined };
+  return {
+    items: series.map((entry) => ({
+      type: "simpleCarouselItem",
+      mangaId: qiMangaId(entry),
+      title: cleanText(entry.title),
+      imageUrl: qiCoverUrl(entry),
+      subtitle: metadataSubtitle(entry.type, entry.status),
+      contentRating: "SAFE"
+    })),
+    metadata
+  };
 }
 
 export function mapQiMangaDetails(mangaId: string, payload: unknown) {
@@ -112,7 +108,16 @@ export function mapQiMangaDetails(mangaId: string, payload: unknown) {
   const title = cleanText(series.title);
   const author = cleanText(series.author);
   const artist = cleanText(series.artist);
-  const genres = asArray<QiGenre>(series.genres);
+  // Genres carry only a name on this API; derive a stable id from it.
+  const genres = asArray<QiGenre>(series.genres)
+    .map((genre) => {
+      const genreTitle = cleanText(genre.name);
+      return {
+        id: cleanText(genre.slug) || cleanText(genre.id) || slugify(genreTitle),
+        title: genreTitle
+      };
+    })
+    .filter((genre) => genre.id && genre.title);
 
   return {
     mangaId,
@@ -127,18 +132,7 @@ export function mapQiMangaDetails(mangaId: string, payload: unknown) {
       contentRating: "SAFE",
       status: cleanText(series.status) || "UNKNOWN",
       tagGroups: genres.length > 0
-        ? [
-            {
-              id: "genres",
-              title: "Genres",
-              tags: genres
-                .map((genre) => ({
-                  id: cleanText(genre.id),
-                  title: cleanText(genre.name)
-                }))
-                .filter((genre) => genre.id && genre.title)
-            }
-          ]
+        ? [{ id: "genres", title: "Genres", tags: genres }]
         : [],
       additionalInfo: {
         seriesId: cleanText(series.id),
@@ -149,7 +143,9 @@ export function mapQiMangaDetails(mangaId: string, payload: unknown) {
 }
 
 export function mapQiChapters(sourceManga: QiSourceMangaRef, payload: unknown) {
-  const chapters = asArray<QiChapterPreview>(asRecord(payload).data);
+  const chapters = asArray<QiChapterPreview>(
+    firstArray(asRecord(payload).data, asRecord(payload).chapters)
+  );
 
   return chapters
     .filter(isReadableChapter)
@@ -157,10 +153,9 @@ export function mapQiChapters(sourceManga: QiSourceMangaRef, payload: unknown) {
     .map((chapter, index) => ({
       chapterId: cleanText(chapter.slug),
       sourceManga,
-      title: cleanText(chapter.title),
+      title: chapterTitle(chapter),
       chapNum: chapter.number ?? 0,
       volume: 0,
-      volumetitle: "",
       langCode: "en",
       sortingIndex: index,
       publishDate: new Date(chapter.createdAt ?? 0)
@@ -172,13 +167,21 @@ export function mapQiChapterDetails(
   payload: unknown
 ) {
   const result = asRecord(payload);
-  const rawPages = firstArray(result.images, result.pages, result.data);
-  const pages = rawPages
+
+  if (result.requiresPurchase === true) {
+    throw new Error(
+      "This QiManga chapter requires a purchase, so its pages are not publicly readable."
+    );
+  }
+
+  const pages = firstArray(result.images, result.pages, asRecord(result.data).images)
     .map((image, index) => ({ image, order: pageOrder(image, index) }))
     .sort((left, right) => left.order - right.order)
     .map(({ image }) =>
       resolveImageUrl(
-        typeof image === "string" ? image : pickImageValue(asRecord(image), ["url", "src", "image", "path"]),
+        typeof image === "string"
+          ? image
+          : pickImageValue(asRecord(image), ["url", "src", "image", "path"]),
         QIMANGA_API_ORIGIN
       )
     )
@@ -195,25 +198,53 @@ export function mapQiChapterDetails(
   };
 }
 
-export function mapQiSearchResults(payload: unknown, pageSize = 20) {
-  if (Array.isArray(payload)) {
-    return { items: mapSearchItems(payload as QiSeriesPreview[]), metadata: undefined };
-  }
+export function mapQiSearchResults(payload: unknown, page = 1) {
+  const { series, metadata } = readSeriesPage(payload, page);
 
-  const result = asRecord(payload);
+  return {
+    items: series.map((entry) => ({
+      mangaId: qiMangaId(entry),
+      title: cleanText(entry.title),
+      imageUrl: qiCoverUrl(entry),
+      subtitle: metadataSubtitle(entry.type, entry.status),
+      contentRating: "SAFE"
+    })),
+    metadata
+  };
+}
+
+/**
+ * `/series` and `/series/search` both answer with
+ * `{ data: [...], totalPages, current }`.
+ */
+export function readSeriesPage(payload: unknown, page = 1) {
+  const result = Array.isArray(payload) ? { data: payload } : asRecord(payload);
   const data = firstArray<QiSeriesPreview>(
     result.data,
     result.results,
     result.items,
     result.series
-  );
-  const items = mapSearchItems(data);
-  const hasNextPage = data.length >= pageSize && result.next;
+  ).filter(isReadableSeries);
+
+  const currentPage = toPositiveInt(result.current) || toPositiveInt(page) || 1;
+  const totalPages = toPositiveInt(result.totalPages);
 
   return {
-    items,
-    metadata: hasNextPage ? { page: Number(result.next) } : undefined
+    series: data,
+    metadata:
+      totalPages > currentPage
+        ? ({ page: currentPage + 1 } as QiPageMetadata)
+        : undefined
   };
+}
+
+/** How many chapter pages remain after the one just read. */
+export function qiNextPage(payload: unknown, currentPage: number): number {
+  const result = asRecord(payload);
+  const current = toPositiveInt(result.current) || currentPage;
+  const totalPages = toPositiveInt(result.totalPages);
+
+  return totalPages > current ? current + 1 : 0;
 }
 
 export function qiSlugFromSourceManga(sourceManga: QiSourceMangaRef) {
@@ -221,9 +252,17 @@ export function qiSlugFromSourceManga(sourceManga: QiSourceMangaRef) {
 }
 
 export function qiCoverUrl(entry: unknown): string {
-  const value = pickImageValue(asRecord(entry), COVER_KEYS);
-  // Values served by the API are normally absolute; relative ones resolve
-  // against the host that served them.
+  const value = pickImageValue(asRecord(entry), [
+    "cover",
+    "coverUrl",
+    "coverImage",
+    "thumbnail",
+    "thumbnailUrl",
+    "image",
+    "imageUrl",
+    "poster"
+  ]);
+
   return resolveImageUrl(value, QIMANGA_API_ORIGIN);
 }
 
@@ -232,56 +271,23 @@ export function qiMangaId(entry: QiSeriesPreview): string {
   return cleanText(entry.slug) || cleanText(entry.id);
 }
 
-function mapProminentItems(series: QiSeriesPreview[]) {
-  return series.filter(isReadableSeries).map((entry) => ({
-    type: "prominentCarouselItem",
-    mangaId: qiMangaId(entry),
-    title: cleanText(entry.title),
-    imageUrl: qiCoverUrl(entry),
-    subtitle: metadataSubtitle(entry.type, entry.status),
-    contentRating: "SAFE"
-  }));
-}
+function chapterTitle(chapter: QiChapterPreview): string {
+  const number = chapter.number;
+  const numberText =
+    number == null ? "" : Number.isInteger(number) ? String(number) : String(number);
+  const title = cleanText(chapter.title);
 
-function mapSimpleItems(series: QiSeriesPreview[]) {
-  return series.filter(isReadableSeries).map((entry) => ({
-    type: "simpleCarouselItem",
-    mangaId: qiMangaId(entry),
-    title: cleanText(entry.title),
-    imageUrl: qiCoverUrl(entry),
-    subtitle: metadataSubtitle(entry.type, entry.status),
-    contentRating: "SAFE"
-  }));
-}
+  if (!numberText) {
+    return title || "Chapter";
+  }
+  if (!title || title === numberText) {
+    return `Chapter ${numberText}`;
+  }
+  if (title.includes(numberText) && /^(chapter|ch\.?|episode|ep\.?)\b/i.test(title)) {
+    return title;
+  }
 
-function mapChapterUpdateItems(series: QiSeriesPreview[]) {
-  return series.filter(isReadableSeries).flatMap((entry) => {
-    const chapter = asArray<QiChapterPreview>(entry.chapters).find(isFreeChapter);
-    if (!chapter?.slug) {
-      return [];
-    }
-
-    return [{
-      type: "chapterUpdatesCarouselItem",
-      mangaId: qiMangaId(entry),
-      chapterId: cleanText(chapter.slug),
-      title: cleanText(entry.title),
-      imageUrl: qiCoverUrl(entry),
-      subtitle: `Ch. ${chapter.number ?? 0}`,
-      publishDate: new Date(chapter.createdAt ?? 0),
-      contentRating: "SAFE"
-    }];
-  });
-}
-
-function mapSearchItems(series: QiSeriesPreview[]) {
-  return series.filter(isReadableSeries).map((entry) => ({
-    mangaId: qiMangaId(entry),
-    title: cleanText(entry.title),
-    imageUrl: qiCoverUrl(entry),
-    subtitle: metadataSubtitle(entry.type, entry.status),
-    contentRating: "SAFE"
-  }));
+  return `Chapter ${numberText} - ${title}`;
 }
 
 function isReadableSeries(series: QiSeriesPreview) {
@@ -296,16 +302,16 @@ function isReadableSeries(series: QiSeriesPreview) {
   );
 }
 
+/**
+ * Chapters are public unless they are behind a coin purchase. There is no
+ * publish-status field on this API; requiring one hid every chapter.
+ */
 function isReadableChapter(chapter: QiChapterPreview) {
   return Boolean(
-    chapter.slug &&
-    chapter.publishStatus === "PUBLIC" &&
-    isFreeChapter(chapter)
+    cleanText(chapter.slug) &&
+    chapter.requiresPurchase !== true &&
+    Number(chapter.price ?? 0) === 0
   );
-}
-
-function isFreeChapter(chapter: QiChapterPreview) {
-  return chapter.requiresPurchase !== true && Number(chapter.price ?? 0) === 0;
 }
 
 function splitAlternativeTitles(value: unknown) {
@@ -349,6 +355,18 @@ function firstArray<T>(...candidates: unknown[]): T[] {
 function pageOrder(image: unknown, index: number): number {
   const order = asRecord(image).order;
   return typeof order === "number" && Number.isFinite(order) ? order : index;
+}
+
+function toPositiveInt(value: unknown): number {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function slugify(value: string): string {
+  return value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
 }
 
 function cleanText(value: unknown): string {

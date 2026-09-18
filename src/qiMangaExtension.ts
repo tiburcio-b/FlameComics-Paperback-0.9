@@ -1,13 +1,18 @@
 import {
   QIMANGA_API_DOMAIN,
+  QIMANGA_CHAPTER_PAGE_SIZE,
   QIMANGA_DOMAIN,
+  QIMANGA_PAGE_SIZE,
   mapQiChapterDetails,
   mapQiChapters,
   mapQiDiscoverSectionItems,
   mapQiDiscoverSections,
   mapQiMangaDetails,
   mapQiSearchResults,
+  qiNextPage,
   qiSlugFromSourceManga,
+  qiSortForSection,
+  type QiPageMetadata,
   type QiSearchQuery,
   type QiSourceMangaRef
 } from "./qiMangaParser";
@@ -44,10 +49,18 @@ class QiMangaInterceptor extends PaperbackInterceptor {
       headers: {
         ...(request.headers ?? {}),
         referer: `${QIMANGA_DOMAIN}/`,
-        // Browsers send Origin for the XHR API calls but never for image
-        // loads; sending it anyway is a cheap way to earn a CDN 403.
-        ...(isImage ? {} : { origin: QIMANGA_DOMAIN }),
-        "user-agent": await Application.getDefaultUserAgent()
+        "user-agent": await Application.getDefaultUserAgent(),
+        // The API is called cross-origin from the site, and rejects requests
+        // that do not look like that call. Image loads carry none of this.
+        ...(isImage
+          ? {}
+          : {
+              accept: "application/json, text/plain, */*",
+              origin: QIMANGA_DOMAIN,
+              "sec-fetch-dest": "empty",
+              "sec-fetch-mode": "cors",
+              "sec-fetch-site": "same-site"
+            })
       }
     };
   }
@@ -102,9 +115,15 @@ export class QiMangaExtension {
     return mapQiDiscoverSections();
   }
 
-  async getDiscoverSectionItems(section: DiscoverSection, _metadata?: unknown) {
-    const payload = await this.fetchJson("v1/home");
-    return mapQiDiscoverSectionItems(section.id, payload);
+  async getDiscoverSectionItems(
+    section: DiscoverSection,
+    metadata?: QiPageMetadata
+  ) {
+    const page = metadata?.page ?? 1;
+    const payload = await this.fetchJson(
+      `v1/series?page=${page}&perPage=${QIMANGA_PAGE_SIZE}&sort=${encodeURIComponent(qiSortForSection(section.id))}`
+    );
+    return mapQiDiscoverSectionItems(section.id, payload, page);
   }
 
   async getMangaDetails(mangaId: string) {
@@ -119,14 +138,12 @@ export class QiMangaExtension {
 
     for (;;) {
       const payload = await this.fetchJson(
-        `v1/series/${slug}/chapters?page=${page}&perPage=30&sort=desc`
+        `v1/series/${slug}/chapters?page=${page}&perPage=${QIMANGA_CHAPTER_PAGE_SIZE}&sort=desc`
       );
       chapters.push(...this.payloadData(payload));
 
-      const nextPage = this.nextPage(payload);
-      // Only follow a cursor that actually advances, so a server that keeps
-      // echoing the current page cannot spin this loop forever.
-      if (nextPage <= page || page >= MAX_CHAPTER_PAGES) {
+      const nextPage = qiNextPage(payload, page);
+      if (!nextPage || nextPage <= page || page >= MAX_CHAPTER_PAGES) {
         break;
       }
       page = nextPage;
@@ -143,15 +160,15 @@ export class QiMangaExtension {
     return mapQiChapterDetails(chapter, payload);
   }
 
-  async getSearchResults(query: QiSearchQuery, metadata?: { page?: number }) {
+  async getSearchResults(query: QiSearchQuery, metadata?: QiPageMetadata) {
     const page = metadata?.page ?? 1;
     const title = (query.title ?? "").trim();
     const path = title
-      ? `v1/series/search?q=${encodeURIComponent(title)}&page=${page}&perPage=20`
-      : `v1/series?page=${page}&perPage=20&sort=latest`;
+      ? `v1/series/search?q=${encodeURIComponent(title)}&page=${page}&perPage=${QIMANGA_PAGE_SIZE}`
+      : `v1/series?page=${page}&perPage=${QIMANGA_PAGE_SIZE}&sort=latest`;
     const payload = await this.fetchJson(path);
 
-    return mapQiSearchResults(payload);
+    return mapQiSearchResults(payload, page);
   }
 
   async saveCloudflareBypassCookies(cookies: Cookie[] = []) {
@@ -213,15 +230,6 @@ export class QiMangaExtension {
     }
   }
 
-  private nextPage(payload: unknown) {
-    if (!payload || typeof payload !== "object") {
-      return 0;
-    }
-
-    const next = (payload as { next?: unknown }).next;
-    return typeof next === "number" ? next : 0;
-  }
-
   private payloadData(payload: unknown) {
     if (!payload || typeof payload !== "object") {
       return [];
@@ -230,7 +238,6 @@ export class QiMangaExtension {
     const data = (payload as { data?: unknown }).data;
     return Array.isArray(data) ? data : [];
   }
-
 }
 
 export const QiManga = new QiMangaExtension();

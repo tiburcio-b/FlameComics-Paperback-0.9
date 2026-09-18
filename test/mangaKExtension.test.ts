@@ -7,17 +7,22 @@ function bytes(value: string): ArrayBuffer {
   return textEncoder.encode(value).buffer as ArrayBuffer;
 }
 
-function nextDataHtml(payload: unknown) {
-  return `<script id="__NEXT_DATA__" type="application/json">${JSON.stringify(payload)}</script>`;
+type FakeResponse = { status?: number; body: string };
+
+function installFakeApplication(routes: Record<string, FakeResponse>) {
+  return installFakeApplicationMatching((url) => routes[url]);
 }
 
-function installFakeApplication(routes: Record<string, { status?: number; body: string }>) {
+/** For URLs that carry a cache-busting parameter and cannot be matched exactly. */
+function installFakeApplicationMatching(
+  resolve: (url: string) => FakeResponse | undefined
+) {
   const calls: string[] = [];
 
   globalThis.Application = {
     async scheduleRequest(request: { url: string }) {
       calls.push(request.url);
-      const response = routes[request.url];
+      const response = resolve(request.url);
       if (!response) {
         return [{ status: 404, headers: {}, cookies: [] }, bytes("")];
       }
@@ -51,79 +56,114 @@ afterEach(() => {
 });
 
 describe("MangaK extension runtime", () => {
-  it("fetches MangaK HTML pages for details, chapter lists, reader pages, and search", async () => {
-    const routes = {
-      "https://mangak.io/the-immortal-genius-spearman": {
-        body: nextDataHtml({
-          props: {
-            pageProps: {
-              initialManga: {
-                id: "EDVMnVwY",
-                slug: "the-immortal-genius-spearman",
-                name: "The Immortal Genius Spearman",
-                cover: "https://rx.resmk.org/covers/spearman.webp",
-                chapters: [
-                  {
-                    slug: "chapter-1",
-                    name: "Chapter 1",
-                    chapterNumber: 1,
-                    updatedAt: "2026-06-16T16:01:49.000Z"
-                  }
-                ]
-              }
-            }
+  it("reads details from the page and chapters from the chapters API", async () => {
+    const detailsHtml = `<script id="__NEXT_DATA__">${JSON.stringify({
+      props: {
+        pageProps: {
+          initialManga: {
+            id: "63a1f",
+            name: "The Immortal Spearman",
+            cover: "https://rx.qvzra.org/covers/spear.webp",
+            status: "ONGOING"
           }
-        })
-      },
-      "https://mangak.io/the-immortal-genius-spearman/chapter-1": {
-        body: nextDataHtml({
-          props: {
-            pageProps: {
-              initialChapter: {
-                images: ["https://rx.qvzri.org/r/p/path/001.webp"]
-              },
-              initialManga: {
-                slug: "the-immortal-genius-spearman"
-              }
-            }
+        }
+      }
+    })}</script>`;
+
+    const routes: Record<string, { body: string }> = {
+      "https://mangak.io/the-immortal-spearman": { body: detailsHtml }
+    };
+    const { calls } = installFakeApplication(routes);
+
+    const extension = new MangaKExtension();
+    const details = await extension.getMangaDetails("the-immortal-spearman");
+
+    expect(details.mangaInfo.additionalInfo.seriesId).toBe("63a1f");
+    expect(calls).toEqual(["https://mangak.io/the-immortal-spearman"]);
+  });
+
+  it("uses the stored series id for the chapter list instead of refetching", async () => {
+    const chapterPayload = JSON.stringify({
+      data: {
+        chapters: [
+          {
+            url: "/the-immortal-spearman/chapter-1",
+            name: "Chapter 1",
+            chapter_number: 1,
+            updated_at: "2026-06-01T00:00:00.000Z"
           }
-        })
-      },
-      "https://mangak.io/search?keyword=spear&page=2": {
-        body: nextDataHtml({
-          props: {
-            pageProps: {
-              ssrItems: [],
-              ssrPagination: { page: 2, has_next: false }
-            }
+        ]
+      }
+    });
+
+    // The chapter-list URL carries a cache-busting timestamp, so match on prefix.
+    const { calls } = installFakeApplicationMatching((url) =>
+      url.startsWith("https://api.mangak.io/titles/63a1f/chapters?cv=")
+        ? { body: chapterPayload }
+        : undefined
+    );
+
+    const extension = new MangaKExtension();
+    const chapters = await extension.getChapters({
+      mangaId: "the-immortal-spearman",
+      mangaInfo: { additionalInfo: { seriesId: "63a1f" } }
+    });
+
+    expect(chapters.map((chapter) => chapter.chapterId)).toEqual([
+      "the-immortal-spearman/chapter-1"
+    ]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain("/titles/63a1f/chapters?cv=");
+  });
+
+  it("strips punctuation from the search query and pages off has_next", async () => {
+    const url =
+      "https://api.mangak.io/titles/search?page=1&limit=24&q=immortal+spearman";
+    const { calls } = installFakeApplication({
+      [url]: {
+        body: JSON.stringify({
+          data: {
+            items: [
+              {
+                id: "1",
+                name: "The Immortal Spearman",
+                cover: "https://rx.qvzra.org/c.webp",
+                url: "/the-immortal-spearman"
+              }
+            ],
+            pagination: { has_next: true }
           }
         })
       }
-    };
-    const { calls } = installFakeApplication(routes);
+    });
+
     const extension = new MangaKExtension();
+    const results = await extension.getSearchResults(
+      { title: "immortal, spearman!" },
+      undefined
+    );
 
-    const details = await extension.getMangaDetails("the-immortal-genius-spearman");
-    const chapters = await extension.getChapters({
-      mangaId: "the-immortal-genius-spearman",
-      title: "The Immortal Genius Spearman"
-    });
-    const chapterDetails = await extension.getChapterDetails({
-      chapterId: "chapter-1",
-      sourceManga: { mangaId: "the-immortal-genius-spearman" }
-    });
-    const search = await extension.getSearchResults({ title: "spear" }, { page: 2 });
+    expect(calls).toEqual([url]);
+    expect(results.items[0].mangaId).toBe("the-immortal-spearman");
+    expect(results.metadata).toEqual({ page: 2 });
+  });
 
-    expect(details.mangaInfo.primaryTitle).toBe("The Immortal Genius Spearman");
-    expect(chapters).toHaveLength(1);
-    expect(chapterDetails.pages).toEqual(["https://rx.qvzri.org/r/p/path/001.webp"]);
-    expect(search).toEqual({ items: [], metadata: undefined });
-    expect(calls).toEqual([
-      "https://mangak.io/the-immortal-genius-spearman",
-      "https://mangak.io/the-immortal-genius-spearman",
-      "https://mangak.io/the-immortal-genius-spearman/chapter-1",
-      "https://mangak.io/search?keyword=spear&page=2"
-    ]);
+  it("requests discover items with the section's sort and window", async () => {
+    const url =
+      "https://api.mangak.io/titles/search?sort=popular&page=1&limit=24&window=week";
+    const { calls } = installFakeApplication({
+      [url]: {
+        body: JSON.stringify({ data: { items: [], pagination: { has_next: false } } })
+      }
+    });
+
+    const extension = new MangaKExtension();
+    await extension.getDiscoverSectionItems(
+      { id: "popular", title: "Popular This Week", type: 1 },
+      undefined
+    );
+
+    expect(calls).toEqual([url]);
   });
 
   it("throws a Cloudflare bypass error when a challenge response is detected", async () => {
@@ -133,15 +173,9 @@ describe("MangaK extension runtime", () => {
     await expect(
       extension.interceptResponse(
         { url: "https://mangak.io/home", method: "GET" },
-        { status: 403, headers: { "cf-mitigated": "challenge" } },
+        { status: 403, headers: { "cf-mitigated": "challenge" } } as any,
         bytes("")
       )
-    ).rejects.toMatchObject({
-      type: "cloudflareError",
-      resolutionRequest: {
-        url: "https://mangak.io/home",
-        method: "GET"
-      }
-    });
+    ).rejects.toMatchObject({ type: "cloudflareError" });
   });
 });

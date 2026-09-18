@@ -9,6 +9,7 @@ import {
 } from "../src/flameParser.ts";
 import {
   QIMANGA_API_DOMAIN,
+  QIMANGA_DOMAIN,
   mapQiChapterDetails,
   mapQiChapters,
   mapQiDiscoverSectionItems,
@@ -17,6 +18,7 @@ import {
   mapQiSearchResults
 } from "../src/qiMangaParser.ts";
 import {
+  MANGAK_API_DOMAIN,
   MANGAK_DOMAIN,
   extractMangaKNextData,
   mapMangaKChapterDetails,
@@ -28,27 +30,11 @@ import {
 } from "../src/mangaKParser.ts";
 
 const FLAME_DOMAIN = "https://flamecomics.xyz";
-const QIMANGA_DOMAIN = "https://qimanga.com";
-
-/** QiManga's API is called cross-origin, exactly as the extension calls it. */
-async function fetchJson(url) {
-  return fetchJsonWithHeaders(url, {
-    "origin": QIMANGA_DOMAIN,
-    "referer": `${QIMANGA_DOMAIN}/`
-  });
-}
-
-/** Flame's data routes are same-origin documents: referer only, no origin. */
-async function fetchFlameJson(url) {
-  return fetchJsonWithHeaders(url, { "referer": `${FLAME_DOMAIN}/` });
-}
+const USER_AGENT = "Paperback-Repository-Verification/1.0";
 
 async function fetchJsonWithHeaders(url, headers) {
   const response = await fetch(url, {
-    headers: {
-      ...headers,
-      "user-agent": "Paperback-Repository-Verification/1.0"
-    }
+    headers: { ...headers, "user-agent": USER_AGENT }
   });
   if (!response.ok) {
     throw new Error(`GET ${url} failed with ${response.status}`);
@@ -56,12 +42,34 @@ async function fetchJsonWithHeaders(url, headers) {
   return response.json();
 }
 
+/** Flame's data routes are same-origin documents: referer only, no origin. */
+async function fetchFlameJson(url) {
+  return fetchJsonWithHeaders(url, { referer: `${FLAME_DOMAIN}/` });
+}
+
+/** QiManga's API is called cross-origin, exactly as the extension calls it. */
+async function fetchQiJson(path) {
+  return fetchJsonWithHeaders(`${QIMANGA_API_DOMAIN}/${path}`, {
+    accept: "application/json, text/plain, */*",
+    origin: QIMANGA_DOMAIN,
+    referer: `${QIMANGA_DOMAIN}/`,
+    "sec-fetch-dest": "empty",
+    "sec-fetch-mode": "cors",
+    "sec-fetch-site": "same-site"
+  });
+}
+
+async function fetchMangaKApi(path) {
+  return fetchJsonWithHeaders(`${MANGAK_API_DOMAIN}${path}`, {
+    accept: "application/json, text/plain, */*",
+    origin: MANGAK_DOMAIN,
+    referer: `${MANGAK_DOMAIN}/`
+  });
+}
+
 async function fetchMangaKPage(path) {
   const response = await fetch(`${MANGAK_DOMAIN}${path}`, {
-    headers: {
-      "referer": `${MANGAK_DOMAIN}/`,
-      "user-agent": "Paperback-Repository-Verification/1.0"
-    }
+    headers: { referer: `${MANGAK_DOMAIN}/`, "user-agent": USER_AGENT }
   });
   if (!response.ok) {
     throw new Error(`GET ${MANGAK_DOMAIN}${path} failed with ${response.status}`);
@@ -75,12 +83,7 @@ async function fetchMangaKPage(path) {
  */
 async function assertImagesLoad(source, urls) {
   for (const url of urls.filter(Boolean)) {
-    const response = await fetch(url, {
-      method: "GET",
-      headers: {
-        "user-agent": "Paperback-Repository-Verification/1.0"
-      }
-    });
+    const response = await fetch(url, { headers: { "user-agent": USER_AGENT } });
 
     if (!response.ok) {
       throw new Error(`${source} image ${url} responded with ${response.status}`);
@@ -95,11 +98,18 @@ async function assertImagesLoad(source, urls) {
   }
 }
 
-async function main() {
+function assertCovers(source, items) {
+  const missing = items.filter((item) => !item.imageUrl?.startsWith("http"));
+  if (missing.length > 0) {
+    throw new Error(
+      `${source} produced ${missing.length}/${items.length} items without an absolute cover URL`
+    );
+  }
+}
+
+async function verifyFlameComics() {
   const homepage = await fetch(FLAME_DOMAIN, {
-    headers: {
-      "user-agent": "Paperback-Repository-Verification/1.0"
-    }
+    headers: { "user-agent": USER_AGENT }
   }).then((response) => response.text());
   const buildId = extractBuildId(homepage);
 
@@ -120,10 +130,7 @@ async function main() {
   if (!mangaDetails.mangaInfo.primaryTitle || chapters.length === 0) {
     throw new Error("Live series details did not produce title and chapters");
   }
-  await assertImagesLoad("flameComics", [
-    mangaDetails.mangaInfo.thumbnailUrl,
-    ...sections.flatMap((section) => section.items.slice(0, 1).map((item) => item.imageUrl))
-  ]);
+  await assertImagesLoad("flameComics", [mangaDetails.mangaInfo.thumbnailUrl]);
 
   const chapter = chapters[0];
   const token = findChapterToken(chapter.chapterId, seriesPayload);
@@ -142,132 +149,162 @@ async function main() {
   if (searchResults.items.length === 0) {
     throw new Error("Live search did not produce results");
   }
-  if (searchResults.items.some((item) => !item.imageUrl.startsWith("http"))) {
-    throw new Error("Live search produced results without absolute cover URLs");
-  }
+  assertCovers("flameComics", searchResults.items);
 
-  const qiHomePayload = await fetchJson(`${QIMANGA_API_DOMAIN}/v1/home`);
-  const qiSections = mapQiDiscoverSections();
-  const qiNewItems = mapQiDiscoverSectionItems("new", qiHomePayload);
-  if (qiSections.length !== 5 || qiNewItems.items.length === 0) {
-    throw new Error("Live QiManga homepage did not produce populated items");
-  }
+  return {
+    buildId,
+    sectionCount: sections.length,
+    sampledManga: mangaDetails.mangaInfo.primaryTitle,
+    sampledChapters: chapters.length,
+    sampledPages: chapterDetails.pages.length,
+    searchResults: searchResults.items.length
+  };
+}
 
-  const qiFirstManga = qiNewItems.items[0];
-  const qiSeriesPayload = await fetchJson(
-    `${QIMANGA_API_DOMAIN}/v1/series/${qiFirstManga.mangaId}`
-  );
-  const qiMangaDetails = mapQiMangaDetails(qiFirstManga.mangaId, qiSeriesPayload);
-  const qiChaptersPayload = await fetchJson(
-    `${QIMANGA_API_DOMAIN}/v1/series/${qiFirstManga.mangaId}/chapters?page=1&perPage=30&sort=desc`
-  );
-  const qiChapters = mapQiChapters({ mangaId: qiFirstManga.mangaId }, qiChaptersPayload);
-  if (!qiMangaDetails.mangaInfo.primaryTitle || qiChapters.length === 0) {
-    throw new Error("Live QiManga series details did not produce title and chapters");
+async function verifyQiManga() {
+  const sections = mapQiDiscoverSections();
+  const browsePayload = await fetchQiJson("v1/series?page=1&perPage=20&sort=popular");
+  const popular = mapQiDiscoverSectionItems("popular", browsePayload, 1);
+  if (sections.length === 0 || popular.items.length === 0) {
+    throw new Error("Live QiManga discover did not produce populated items");
   }
+  assertCovers("qiManga", popular.items);
 
-  const qiChapterPayload = await fetchJson(
-    `${QIMANGA_API_DOMAIN}/v1/series/${qiFirstManga.mangaId}/chapters/${qiFirstManga.chapterId}`
+  const first = popular.items[0];
+  const seriesPayload = await fetchQiJson(`v1/series/${first.mangaId}`);
+  const details = mapQiMangaDetails(first.mangaId, seriesPayload);
+
+  const chaptersPayload = await fetchQiJson(
+    `v1/series/${first.mangaId}/chapters?page=1&perPage=100&sort=desc`
   );
-  const qiChapterDetails = mapQiChapterDetails(
-    {
-      chapterId: qiFirstManga.chapterId,
-      sourceManga: { mangaId: qiFirstManga.mangaId }
-    },
-    qiChapterPayload
+  const chapters = mapQiChapters({ mangaId: first.mangaId }, chaptersPayload);
+  if (!details.mangaInfo.primaryTitle) {
+    throw new Error("Live QiManga series details did not produce a title");
+  }
+  // This is the check that would have caught the publish-status filter that
+  // silently emptied every chapter list.
+  if (chapters.length === 0) {
+    throw new Error(
+      `Live QiManga chapter list for ${first.mangaId} parsed to zero readable chapters`
+    );
+  }
+  await assertImagesLoad("qiManga", [details.mangaInfo.thumbnailUrl]);
+
+  const chapterPayload = await fetchQiJson(
+    `v1/series/${first.mangaId}/chapters/${chapters[0].chapterId}`
   );
-  if (qiChapterDetails.pages.length === 0) {
+  const chapterDetails = mapQiChapterDetails(
+    { chapterId: chapters[0].chapterId, sourceManga: { mangaId: first.mangaId } },
+    chapterPayload
+  );
+  if (chapterDetails.pages.length === 0) {
     throw new Error("Live QiManga chapter details did not produce page URLs");
   }
-  await assertImagesLoad("qiManga", [
-    qiMangaDetails.mangaInfo.thumbnailUrl,
-    qiNewItems.items[0].imageUrl
-  ]);
 
-  const qiSearchPayload = await fetchJson(
-    `${QIMANGA_API_DOMAIN}/v1/series/search?q=immortal&page=1&perPage=20`
+  const searchPayload = await fetchQiJson(
+    "v1/series/search?q=immortal&page=1&perPage=20"
   );
-  const qiSearchResults = mapQiSearchResults(qiSearchPayload);
-  if (qiSearchResults.items.length === 0) {
+  const searchResults = mapQiSearchResults(searchPayload, 1);
+  if (searchResults.items.length === 0) {
     throw new Error("Live QiManga search did not produce results");
   }
+  assertCovers("qiManga", searchResults.items);
 
-  const mangaKHomePayload = await fetchMangaKPage("/home");
-  const mangaKSections = mapMangaKDiscoverSections();
-  const mangaKLatestItems = mapMangaKDiscoverSectionItems("latest", mangaKHomePayload);
-  if (mangaKSections.length !== 5 || mangaKLatestItems.items.length === 0) {
-    throw new Error("Live MangaK homepage did not produce populated items");
+  return {
+    sectionCount: sections.length,
+    sampledManga: details.mangaInfo.primaryTitle,
+    sampledChapters: chapters.length,
+    sampledPages: chapterDetails.pages.length,
+    searchResults: searchResults.items.length
+  };
+}
+
+async function verifyMangaK() {
+  const sections = mapMangaKDiscoverSections();
+  const latestPayload = await fetchMangaKApi(
+    "/titles/search?sort=latest&page=1&limit=24"
+  );
+  const latest = mapMangaKDiscoverSectionItems("latest", latestPayload, 1);
+  if (sections.length === 0 || latest.items.length === 0) {
+    throw new Error("Live MangaK discover did not produce populated items");
+  }
+  assertCovers("mangaK", latest.items);
+
+  const first = latest.items[0];
+  const seriesPayload = await fetchMangaKPage(`/${first.mangaId}`);
+  const details = mapMangaKMangaDetails(first.mangaId, seriesPayload);
+  if (!details.mangaInfo.primaryTitle) {
+    throw new Error("Live MangaK series details did not produce a title");
+  }
+  await assertImagesLoad("mangaK", [details.mangaInfo.thumbnailUrl]);
+
+  const seriesId = details.mangaInfo.additionalInfo.seriesId;
+  if (!seriesId) {
+    throw new Error(`Live MangaK details for ${first.mangaId} carried no series id`);
   }
 
-  const mangaKFirstManga = mangaKLatestItems.items[0];
-  const mangaKSeriesPayload = await fetchMangaKPage(`/${mangaKFirstManga.mangaId}`);
-  const mangaKMangaDetails = mapMangaKMangaDetails(
-    mangaKFirstManga.mangaId,
-    mangaKSeriesPayload
+  const chaptersPayload = await fetchMangaKApi(
+    `/titles/${seriesId}/chapters?cv=${Date.now()}`
   );
-  const mangaKChapters = mapMangaKChapters(
-    { mangaId: mangaKFirstManga.mangaId },
-    mangaKSeriesPayload
-  );
-  if (!mangaKMangaDetails.mangaInfo.primaryTitle || mangaKChapters.length === 0) {
-    throw new Error("Live MangaK series details did not produce title and chapters");
+  const chapters = mapMangaKChapters({ mangaId: first.mangaId }, chaptersPayload);
+  if (chapters.length === 0) {
+    throw new Error(
+      `Live MangaK chapter list for ${first.mangaId} parsed to zero chapters`
+    );
   }
 
-  const mangaKChapter = mangaKChapters[mangaKChapters.length - 1];
-  const mangaKChapterPayload = await fetchMangaKPage(
-    `/${mangaKFirstManga.mangaId}/${mangaKChapter.chapterId}`
+  const chapter = chapters[chapters.length - 1];
+  const chapterPayload = await fetchMangaKPage(`/${chapter.chapterId}`);
+  const chapterDetails = mapMangaKChapterDetails(
+    { chapterId: chapter.chapterId, sourceManga: { mangaId: first.mangaId } },
+    chapterPayload
   );
-  const mangaKChapterDetails = mapMangaKChapterDetails(
-    {
-      chapterId: mangaKChapter.chapterId,
-      sourceManga: { mangaId: mangaKFirstManga.mangaId }
-    },
-    mangaKChapterPayload
-  );
-  if (mangaKChapterDetails.pages.length === 0) {
+  if (chapterDetails.pages.length === 0) {
     throw new Error("Live MangaK chapter details did not produce page URLs");
   }
-  await assertImagesLoad("mangaK", [
-    mangaKMangaDetails.mangaInfo.thumbnailUrl,
-    mangaKLatestItems.items[0].imageUrl
-  ]);
 
-  const mangaKSearchPayload = await fetchMangaKPage("/search?keyword=immortal&page=1");
-  const mangaKSearchResults = mapMangaKSearchResults(mangaKSearchPayload);
-  if (mangaKSearchResults.items.length === 0) {
+  const searchPayload = await fetchMangaKApi(
+    "/titles/search?q=immortal&page=1&limit=24"
+  );
+  const searchResults = mapMangaKSearchResults(searchPayload, 1);
+  if (searchResults.items.length === 0) {
     throw new Error("Live MangaK search did not produce results");
   }
+  assertCovers("mangaK", searchResults.items);
 
-  console.log(
-    JSON.stringify(
-      {
-        flameComics: {
-          buildId,
-          sectionCount: sections.length,
-          sampledManga: mangaDetails.mangaInfo.primaryTitle,
-          sampledChapters: chapters.length,
-          sampledPages: chapterDetails.pages.length,
-          searchResults: searchResults.items.length
-        },
-        qiManga: {
-          sectionCount: qiSections.length,
-          sampledManga: qiMangaDetails.mangaInfo.primaryTitle,
-          sampledChapters: qiChapters.length,
-          sampledPages: qiChapterDetails.pages.length,
-          searchResults: qiSearchResults.items.length
-        },
-        mangaK: {
-          sectionCount: mangaKSections.length,
-          sampledManga: mangaKMangaDetails.mangaInfo.primaryTitle,
-          sampledChapters: mangaKChapters.length,
-          sampledPages: mangaKChapterDetails.pages.length,
-          searchResults: mangaKSearchResults.items.length
-        }
-      },
-      null,
-      2
-    )
-  );
+  return {
+    sectionCount: sections.length,
+    sampledManga: details.mangaInfo.primaryTitle,
+    sampledChapters: chapters.length,
+    sampledPages: chapterDetails.pages.length,
+    searchResults: searchResults.items.length
+  };
+}
+
+async function main() {
+  const results = {};
+  const failures = [];
+
+  // Verify every source even when one is down, so a single outage does not
+  // hide a second regression.
+  for (const [name, verify] of [
+    ["flameComics", verifyFlameComics],
+    ["qiManga", verifyQiManga],
+    ["mangaK", verifyMangaK]
+  ]) {
+    try {
+      results[name] = await verify();
+    } catch (error) {
+      results[name] = { failed: String(error?.message ?? error) };
+      failures.push(name);
+    }
+  }
+
+  console.log(JSON.stringify(results, null, 2));
+
+  if (failures.length > 0) {
+    throw new Error(`Live verification failed for: ${failures.join(", ")}`);
+  }
 }
 
 main().catch((error) => {

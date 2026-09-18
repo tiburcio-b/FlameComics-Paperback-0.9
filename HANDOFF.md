@@ -50,38 +50,71 @@ https://btninja.github.io/FlameComics-Paperback-0.9
 
 ## QiManga API Notes
 
-QiManga is an Angular/SSR app backed by:
+QiManga (QiScans) is backed by:
 
 ```text
 https://api.qimanga.com/api/v1
 ```
 
-Useful endpoints:
+Endpoints the extension uses:
 
 ```text
-GET /home
-GET /series/{slug}
-GET /series/{slug}/chapters?page=1&perPage=30&sort=desc
-GET /series/{slug}/chapters/{chapterSlug}
+GET /series?page=1&perPage=20&sort=latest|popular|newest|alphabetical
 GET /series/search?q={query}&page=1&perPage=20
-GET /series?page=1&perPage=20&sort=latest
-GET /series/genres
+GET /series/{slug}
+GET /series/{slug}/chapters?page=1&perPage=100&sort=desc
+GET /series/{slug}/chapters/{chapterSlug}
 ```
 
-The extension filters out paid or purchase-required chapters because those are not readable as normal public chapters. Chapter pagination is fetched fully and sorted after all pages are collected.
+Series list and search both answer with `{ data, totalPages, current }`.
+Paging follows `current < totalPages`; there is no `next` cursor.
+
+Chapters have **no publish-status field**. A chapter is readable unless
+`requiresPurchase` is true. Requiring a `publishStatus` of `PUBLIC` matched
+nothing and emptied every chapter list.
+
+Genres carry only a `name`, so the tag id is derived from it.
+
+Discover is built from `/series` with the sort values above rather than
+`/home`, which is not part of the documented surface.
+
+The API is called cross-origin from the site and expects it: `Origin`,
+`Referer`, `Accept: application/json, text/plain, */*` and
+`Sec-Fetch-Dest/Mode/Site`. Image requests carry none of that.
 
 ## MangaK Notes
 
-MangaK is a Next.js app backed by server-rendered page data. The extension fetches public HTML pages and parses the `__NEXT_DATA__` payloads:
+MangaK (formerly MangaBuddy) splits across a JSON API and its Next.js pages:
 
 ```text
-GET /home
-GET /{slug}
-GET /{slug}/{chapterSlug}
-GET /search?keyword={query}&page={page}
+https://api.mangak.io   list, search and chapter data
+https://mangak.io       series and chapter pages (Next.js pageProps)
 ```
 
-The live payloads include homepage sections, series details, chapter lists, reader image URLs, and search pagination. MangaK metadata is marked `ADULT` because the public catalog includes adult entries.
+Endpoints the extension uses:
+
+```text
+GET  api/titles/search?q={query}&page=1&limit=24&sort=popular|latest[&window=week]
+GET  api/titles/{seriesId}/chapters?cv={timestamp}
+GET  site/{seriesPath}                     -> pageProps.initialManga
+GET  site/{chapterPath}                    -> pageProps.initialChapter.images
+```
+
+Search answers with `{ data: { items, pagination: { has_next } } }`, and each
+item carries `{ id, name, cover, url }`. `url` is a site-relative path and is
+used as the Paperback `mangaId`; `id` is the API id and is the **only** key the
+chapter list accepts, so it is kept in `additionalInfo.seriesId` and re-read
+from the series page when a stored title predates it.
+
+The chapter list is no longer embedded in the series page — reading
+`initialManga.chapters` returns nothing. Search is no longer server-rendered
+into `ssrItems` either; both moved to the API.
+
+Search queries are stripped of punctuation and capped at 50 characters, which
+is what the endpoint accepts.
+
+Cover and page hosts rotate (`rx.<something>.org`). The parser keeps whatever
+absolute URL the payload carries rather than assuming a host.
 
 ## Verification
 
@@ -93,10 +126,14 @@ npm run verify:live # live smoke test against all three sites
 
 `npm run check` runs all three in sequence.
 
-`verify:live` now also fetches the cover URLs the parsers produce and asserts
-each one returns an `image/*` response. A thumbnail that 404s or returns HTML
-is invisible in a payload-shape check and only shows up in the app, so the
-verifier fetches them.
+`verify:live` checks all three sources independently — one source being down
+no longer hides a regression in another — and it fetches the cover URLs the
+parsers produce, asserting each returns an `image/*` response. A thumbnail that
+404s is invisible in a payload-shape check and only shows up in the app.
+
+It also asserts that each source's chapter list parses to a non-zero count.
+That is the check that would have caught QiManga silently filtering every
+chapter away.
 
 ### Cover and search notes
 

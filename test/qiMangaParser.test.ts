@@ -5,56 +5,35 @@ import {
   mapQiDiscoverSectionItems,
   mapQiDiscoverSections,
   mapQiMangaDetails,
-  mapQiSearchResults
+  mapQiSearchResults,
+  qiNextPage,
+  qiSortForSection
 } from "../src/qiMangaParser";
 
-const homePayload = {
-  banners: [
+// Shapes mirror the live API: `/series` and `/series/search` answer with
+// { data, totalPages, current }; genres carry only a name; chapters carry no
+// publish-status field.
+const seriesListPayload = {
+  data: [
     {
-      slug: "warrior-grandpa-and-supreme-granddaughter",
-      title: "Warrior Grandpa and Supreme Granddaughter",
-      cover: "https://media.qimanhwa.com/cover.webp",
+      id: 1229,
+      slug: "the-immortal-genius-spearman",
+      title: "The Immortal Genius Spearman",
+      cover: "https://media.qimanga.com/spearman.webp",
       type: "MANHWA",
-      status: "ONGOING",
-      redirectUrl: null
+      status: "ONGOING"
+    },
+    {
+      id: 44,
+      slug: "a-novel",
+      title: "Some Novel",
+      cover: "https://media.qimanga.com/novel.webp",
+      type: "NOVEL",
+      status: "ONGOING"
     }
   ],
-  popular: [
-    {
-      slug: "evolution-from-a-tree",
-      title: "Evolution From a Tree",
-      cover: "https://media.qimanga.com/tree.webp",
-      type: "MANHUA",
-      status: "ONGOING",
-      redirectUrl: "",
-      chapters: [
-        {
-          slug: "chapter-521",
-          number: 521,
-          price: 75,
-          createdAt: "2026-06-13T04:36:57.233Z"
-        },
-        {
-          slug: "chapter-520",
-          number: 520,
-          price: 0,
-          createdAt: "2026-06-06T08:00:26.841Z"
-        }
-      ]
-    }
-  ],
-  pinned: [],
-  newSeries: [],
-  editorsPick: [
-    {
-      slug: "warrior-grandpa-and-supreme-granddaughter",
-      title: "Warrior Grandpa and Supreme Granddaughter",
-      cover: "https://media.qimanhwa.com/cover.webp",
-      type: "MANHWA",
-      status: "ONGOING",
-      redirectUrl: null
-    }
-  ]
+  totalPages: 3,
+  current: 1
 };
 
 const seriesPayload = {
@@ -68,42 +47,45 @@ const seriesPayload = {
   author: null,
   artist: "Studio",
   description: "<p>Damian, a <strong>Centurion</strong>.</p>",
-  genres: [
-    { id: 2, name: "Action", slug: "action" },
-    { id: 9, name: " Fantasy ", slug: "fantasy" }
-  ]
+  genres: [{ name: "Action" }, { name: "Martial Arts" }]
 };
 
 describe("QiManga parser", () => {
-  it("maps the homepage payload into discover sections using numeric 0.9 section types", () => {
+  it("builds discover sections from the series endpoint's sort values", () => {
     expect(mapQiDiscoverSections()).toEqual([
-      { id: "featured", title: "Featured", type: 2 },
-      { id: "popular", title: "Popular Today", type: 3 },
-      { id: "pinned", title: "Pinned", type: 3 },
-      { id: "new", title: "New Series", type: 3 },
-      { id: "editors-pick", title: "Editor's Pick", type: 1 }
+      { id: "popular", title: "Popular", type: 1 },
+      { id: "latest", title: "Latest Updates", type: 1 },
+      { id: "newest", title: "New Series", type: 1 }
     ]);
+    expect(qiSortForSection("popular")).toBe("popular");
+    expect(qiSortForSection("newest")).toBe("newest");
+    expect(qiSortForSection("unknown")).toBe("latest");
   });
 
-  it("maps discover section items and skips paid update chapters", () => {
-    expect(mapQiDiscoverSectionItems("popular", homePayload)).toEqual({
+  it("maps a series page into discover items, skipping novels", () => {
+    expect(mapQiDiscoverSectionItems("popular", seriesListPayload)).toEqual({
       items: [
         {
-          type: "chapterUpdatesCarouselItem",
-          mangaId: "evolution-from-a-tree",
-          chapterId: "chapter-520",
-          title: "Evolution From a Tree",
-          imageUrl: "https://media.qimanga.com/tree.webp",
-          subtitle: "Ch. 520",
-          publishDate: new Date("2026-06-06T08:00:26.841Z"),
+          type: "simpleCarouselItem",
+          mangaId: "the-immortal-genius-spearman",
+          title: "The Immortal Genius Spearman",
+          imageUrl: "https://media.qimanga.com/spearman.webp",
+          subtitle: "Manhwa • Ongoing",
           contentRating: "SAFE"
         }
       ],
-      metadata: undefined
+      metadata: { page: 2 }
     });
   });
 
-  it("maps series details into a Paperback manga object", () => {
+  it("pages search results off totalPages and current", () => {
+    expect(mapQiSearchResults(seriesListPayload, 1).metadata).toEqual({ page: 2 });
+    expect(
+      mapQiSearchResults({ ...seriesListPayload, current: 3 }, 3).metadata
+    ).toBeUndefined();
+  });
+
+  it("maps series details and derives genre ids from the name", () => {
     expect(mapQiMangaDetails("the-immortal-genius-spearman", seriesPayload)).toEqual({
       mangaId: "the-immortal-genius-spearman",
       mangaInfo: {
@@ -120,8 +102,8 @@ describe("QiManga parser", () => {
             id: "genres",
             title: "Genres",
             tags: [
-              { id: "2", title: "Action" },
-              { id: "9", title: "Fantasy" }
+              { id: "action", title: "Action" },
+              { id: "martial-arts", title: "Martial Arts" }
             ]
           }
         ],
@@ -133,179 +115,103 @@ describe("QiManga parser", () => {
     });
   });
 
-  it("maps public free chapters and filters locked chapters", () => {
+  // The API has no publishStatus field; requiring one hid every chapter.
+  it("keeps public chapters and only drops purchase-required ones", () => {
     const chaptersPayload = {
       data: [
         {
           slug: "chapter-2",
           number: 2,
           title: "Return",
-          price: 50,
-          requiresPurchase: true,
-          publishStatus: "PUBLIC",
-          createdAt: "2026-06-13T16:56:29.624Z"
+          createdAt: "2026-06-13T04:36:57.233Z"
         },
         {
           slug: "chapter-1",
           number: 1,
           title: null,
-          price: 0,
-          requiresPurchase: false,
-          publishStatus: "PUBLIC",
-          createdAt: "2026-06-06T16:56:29.624Z"
+          createdAt: "2026-06-06T08:00:26.841Z"
         },
         {
-          slug: "draft",
-          number: 0,
-          title: "Draft",
-          price: 0,
-          requiresPurchase: false,
-          publishStatus: "DRAFT",
-          createdAt: "2026-06-01T16:56:29.624Z"
+          slug: "chapter-3",
+          number: 3,
+          requiresPurchase: true,
+          createdAt: "2026-06-20T08:00:26.841Z"
         }
       ]
     };
 
-    expect(
-      mapQiChapters(
-        { mangaId: "the-immortal-genius-spearman", title: "The Immortal Genius Spearman" },
-        chaptersPayload
-      )
-    ).toEqual([
-      {
-        chapterId: "chapter-1",
-        sourceManga: {
-          mangaId: "the-immortal-genius-spearman",
-          title: "The Immortal Genius Spearman"
-        },
-        title: "",
-        chapNum: 1,
-        volume: 0,
-        volumetitle: "",
-        langCode: "en",
-        sortingIndex: 0,
-        publishDate: new Date("2026-06-06T16:56:29.624Z")
-      }
+    const chapters = mapQiChapters({ mangaId: "spearman" }, chaptersPayload);
+
+    expect(chapters.map((chapter) => chapter.chapterId)).toEqual([
+      "chapter-1",
+      "chapter-2"
+    ]);
+    expect(chapters.map((chapter) => chapter.title)).toEqual([
+      "Chapter 1",
+      "Chapter 2 - Return"
     ]);
   });
 
-  it("maps chapter image URLs in page order", () => {
-    const chapterPayload = {
-      images: [
-        { url: "https://media.qimanga.com/02.webp", order: 2 },
-        { url: "https://media.qimanga.com/01.webp", order: 1 }
-      ]
-    };
+  it("walks chapter pages with totalPages rather than a next cursor", () => {
+    expect(qiNextPage({ totalPages: 3, current: 1 }, 1)).toBe(2);
+    expect(qiNextPage({ totalPages: 3, current: 3 }, 3)).toBe(0);
+    expect(qiNextPage({ totalPages: 1, current: 1 }, 1)).toBe(0);
+    expect(qiNextPage({}, 1)).toBe(0);
+  });
 
+  it("maps chapter images in order", () => {
     expect(
       mapQiChapterDetails(
+        { chapterId: "chapter-1", sourceManga: { mangaId: "spearman" } },
         {
-          chapterId: "chapter-1",
-          sourceManga: { mangaId: "the-immortal-genius-spearman" }
-        },
-        chapterPayload
+          images: [
+            { url: "https://media.qimanga.com/2.webp", order: 2 },
+            { url: "https://media.qimanga.com/1.webp", order: 1 }
+          ]
+        }
       )
     ).toEqual({
       id: "chapter-1",
-      mangaId: "the-immortal-genius-spearman",
+      mangaId: "spearman",
       pages: [
-        "https://media.qimanga.com/01.webp",
-        "https://media.qimanga.com/02.webp"
+        "https://media.qimanga.com/1.webp",
+        "https://media.qimanga.com/2.webp"
       ]
     });
   });
 
-  it("maps search results and removes novels or redirect-only entries", () => {
-    const searchPayload = {
-      data: [
-        {
-          slug: "forged-immortal",
-          title: "Forged Immortal",
-          cover: "https://media.qimanga.com/forged.webp",
-          type: "MANHUA",
-          status: "DROPPED",
-          redirectUrl: ""
-        },
-        {
-          slug: "external-entry",
-          title: "External Entry",
-          cover: "https://media.qimanga.com/external.webp",
-          type: "MANHWA",
-          status: "ONGOING",
-          redirectUrl: "https://example.com"
-        },
-        {
-          slug: "novel-entry",
-          title: "Novel Entry",
-          cover: "https://media.qimanga.com/novel.webp",
-          type: "NOVEL",
-          status: "ONGOING",
-          redirectUrl: ""
-        }
-      ]
-    };
-
-    expect(mapQiSearchResults(searchPayload)).toEqual({
-      items: [
-        {
-          mangaId: "forged-immortal",
-          title: "Forged Immortal",
-          imageUrl: "https://media.qimanga.com/forged.webp",
-          subtitle: "Manhua • Dropped",
-          contentRating: "SAFE"
-        }
-      ],
-      metadata: undefined
-    });
+  it("explains a purchase-locked chapter instead of returning no pages", () => {
+    expect(() =>
+      mapQiChapterDetails(
+        { chapterId: "chapter-9", sourceManga: { mangaId: "spearman" } },
+        { requiresPurchase: true, totalImages: 12 }
+      )
+    ).toThrow(/purchase/i);
   });
-  it("resolves relative covers and reads renamed cover fields", () => {
+
+  it("resolves relative covers and falls back to the numeric id", () => {
     const payload = {
       data: [
-        { slug: "a", title: "Absolute", cover: "https://media.qimanga.com/a.webp" },
-        { slug: "b", title: "Relative", cover: "/uploads/b.webp" },
-        { slug: "c", title: "Renamed", coverUrl: "/uploads/c.webp" },
-        { slug: "d", title: "Wrapped", cover: { url: "/uploads/d.webp" } }
+        { id: 7, title: "Id Only", cover: "/uploads/b.webp" },
+        { slug: "renamed", title: "Renamed", coverUrl: "https://cdn.test/c.webp" }
       ]
     };
-
-    expect(mapQiSearchResults(payload).items.map((item) => item.imageUrl)).toEqual([
-      "https://media.qimanga.com/a.webp",
-      "https://api.qimanga.com/uploads/b.webp",
-      "https://api.qimanga.com/uploads/c.webp",
-      "https://api.qimanga.com/uploads/d.webp"
-    ]);
-  });
-
-  it("keeps a series that has no cover at all", () => {
-    const payload = { data: [{ slug: "e", title: "No Cover" }] };
 
     expect(mapQiSearchResults(payload).items).toEqual([
       {
-        mangaId: "e",
-        title: "No Cover",
-        imageUrl: "",
+        mangaId: "7",
+        title: "Id Only",
+        imageUrl: "https://api.qimanga.com/uploads/b.webp",
+        subtitle: "",
+        contentRating: "SAFE"
+      },
+      {
+        mangaId: "renamed",
+        title: "Renamed",
+        imageUrl: "https://cdn.test/c.webp",
         subtitle: "",
         contentRating: "SAFE"
       }
     ]);
-  });
-
-  it("reads search results from alternate response containers", () => {
-    const entry = { slug: "f", title: "Found", cover: "https://media.qimanga.com/f.webp" };
-
-    for (const payload of [
-      { results: [entry] },
-      { items: [entry] },
-      { series: [entry] },
-      [entry]
-    ]) {
-      expect(mapQiSearchResults(payload).items.map((item) => item.mangaId)).toEqual(["f"]);
-    }
-  });
-
-  it("falls back to the numeric id when a series has no slug", () => {
-    const payload = { data: [{ id: 1229, title: "Id Only" }] };
-
-    expect(mapQiSearchResults(payload).items[0].mangaId).toBe("1229");
   });
 });
