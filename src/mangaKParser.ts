@@ -1,3 +1,4 @@
+import { decodePaperbackId, encodePaperbackId, encodeUrlPath } from "./paperbackIds";
 import { pickImageValue, resolveImageUrl } from "./urlUtils";
 
 export const MANGAK_DOMAIN = "https://mangak.io";
@@ -150,7 +151,7 @@ export function mapMangaKMangaDetails(mangaId: string, payload: unknown) {
   return {
     mangaId,
     mangaInfo: {
-      shareUrl: `${MANGAK_DOMAIN}/${mangaId}`,
+      shareUrl: `${MANGAK_DOMAIN}/${encodeUrlPath(decodePaperbackId(mangaId))}`,
       primaryTitle: cleanText(manga.name),
       secondaryTitles: alternativeTitles(manga),
       thumbnailUrl: mangaKCoverUrl(manga),
@@ -269,13 +270,16 @@ export function mangaKCoverUrl(entry: unknown): string {
   return resolveImageUrl(value, MANGAK_DOMAIN);
 }
 
-/** Site-relative path used both as the id and to build the page URL. */
+/**
+ * Site-relative path used both as the id and to build the page URL, encoded
+ * so characters Paperback rejects in ids (e.g. apostrophes) survive.
+ */
 export function mangaKMangaId(entry: MangaKItem): string {
-  return normalizePath(entry.url) || cleanText(entry.id);
+  return encodePaperbackId(normalizePath(entry.url) || cleanText(entry.id));
 }
 
 export function mangaKChapterId(chapter: MangaKChapterItem): string {
-  return normalizePath(chapter.url);
+  return encodePaperbackId(normalizePath(chapter.url));
 }
 
 export function normalizePath(value: unknown): string {

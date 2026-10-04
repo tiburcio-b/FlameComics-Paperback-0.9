@@ -1,3 +1,4 @@
+import { decodePaperbackId, encodePaperbackId } from "./paperbackIds";
 import { pickImageValue, resolveImageUrl } from "./urlUtils";
 
 export const QIMANGA_DOMAIN = "https://qimanga.com";
@@ -104,7 +105,7 @@ export function mapQiDiscoverSectionItems(
 
 export function mapQiMangaDetails(mangaId: string, payload: unknown) {
   const series = asRecord(payload);
-  const slug = cleanText(series.slug) || mangaId;
+  const slug = cleanText(series.slug) || decodePaperbackId(mangaId);
   const title = cleanText(series.title);
   const author = cleanText(series.author);
   const artist = cleanText(series.artist);
@@ -113,7 +114,9 @@ export function mapQiMangaDetails(mangaId: string, payload: unknown) {
     .map((genre) => {
       const genreTitle = cleanText(genre.name);
       return {
-        id: cleanText(genre.slug) || cleanText(genre.id) || slugify(genreTitle),
+        id: encodePaperbackId(
+          cleanText(genre.slug) || cleanText(genre.id) || slugify(genreTitle)
+        ),
         title: genreTitle
       };
     })
@@ -122,7 +125,7 @@ export function mapQiMangaDetails(mangaId: string, payload: unknown) {
   return {
     mangaId,
     mangaInfo: {
-      shareUrl: `${QIMANGA_DOMAIN}/series/${slug}`,
+      shareUrl: `${QIMANGA_DOMAIN}/series/${encodeURIComponent(slug)}`,
       primaryTitle: title,
       secondaryTitles: splitAlternativeTitles(series.alternativeTitles),
       thumbnailUrl: qiCoverUrl(series),
@@ -151,7 +154,7 @@ export function mapQiChapters(sourceManga: QiSourceMangaRef, payload: unknown) {
     .filter(isReadableChapter)
     .sort((left, right) => (left.number ?? 0) - (right.number ?? 0))
     .map((chapter, index) => ({
-      chapterId: cleanText(chapter.slug),
+      chapterId: encodePaperbackId(cleanText(chapter.slug)),
       sourceManga,
       title: chapterTitle(chapter),
       chapNum: chapter.number ?? 0,
@@ -247,8 +250,12 @@ export function qiNextPage(payload: unknown, currentPage: number): number {
   return totalPages > current ? current + 1 : 0;
 }
 
+/** The raw site slug, ready to be URL-encoded into an API path. */
 export function qiSlugFromSourceManga(sourceManga: QiSourceMangaRef) {
-  return sourceManga.mangaInfo?.additionalInfo?.slug || sourceManga.mangaId;
+  return (
+    sourceManga.mangaInfo?.additionalInfo?.slug ||
+    decodePaperbackId(sourceManga.mangaId)
+  );
 }
 
 export function qiCoverUrl(entry: unknown): string {
@@ -266,9 +273,12 @@ export function qiCoverUrl(entry: unknown): string {
   return resolveImageUrl(value, QIMANGA_API_ORIGIN);
 }
 
-/** Series are addressed by slug, with the numeric id as a fallback. */
+/**
+ * Series are addressed by slug, with the numeric id as a fallback. Slugs can
+ * carry apostrophes, which Paperback rejects in ids, so they are encoded.
+ */
 export function qiMangaId(entry: QiSeriesPreview): string {
-  return cleanText(entry.slug) || cleanText(entry.id);
+  return encodePaperbackId(cleanText(entry.slug) || cleanText(entry.id));
 }
 
 function chapterTitle(chapter: QiChapterPreview): string {

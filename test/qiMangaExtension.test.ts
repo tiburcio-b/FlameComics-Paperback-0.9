@@ -151,6 +151,49 @@ describe("QiManga extension runtime", () => {
     expect(imageRequest.headers).toMatchObject({ referer: "https://qimanga.com/" });
   });
 
+  it("hands the app valid ids for slugs with apostrophes and requests them unencoded", async () => {
+    const slug = "the-dan-family's-good-for-nothing-is-too-strong";
+    const searchUrl =
+      "https://api.qimanga.com/api/v1/series/search?q=dan&page=1&perPage=20";
+    const routes = {
+      [searchUrl]: {
+        body: JSON.stringify({
+          totalPages: 1,
+          current: 1,
+          data: [{ id: 7, slug, title: "The Dan Family's Good-for-Nothing" }]
+        })
+      },
+      [`https://api.qimanga.com/api/v1/series/${slug}`]: {
+        body: JSON.stringify({ id: 7, slug, title: "The Dan Family's Good-for-Nothing" })
+      },
+      [`https://api.qimanga.com/api/v1/series/${slug}/chapters?page=1&perPage=100&sort=desc`]: {
+        body: JSON.stringify({
+          totalPages: 1,
+          current: 1,
+          data: [{ slug: "chapter-1", number: 1, createdAt: "2026-06-01T00:00:00.000Z" }]
+        })
+      }
+    };
+    const { calls } = installFakeApplication(routes);
+
+    const extension = new QiMangaExtension();
+    const results = await extension.getSearchResults({ title: "dan" }, undefined);
+    const mangaId = results.items[0].mangaId;
+
+    expect(mangaId).toMatch(/^[A-Za-z0-9._\-@()[\]%?#+=/&:]+$/);
+
+    const details = await extension.getMangaDetails(mangaId);
+    expect(details.mangaInfo.additionalInfo.slug).toBe(slug);
+
+    const chapters = await extension.getChapters({ mangaId });
+    expect(chapters).toHaveLength(1);
+    expect(calls).toEqual([
+      searchUrl,
+      `https://api.qimanga.com/api/v1/series/${slug}`,
+      `https://api.qimanga.com/api/v1/series/${slug}/chapters?page=1&perPage=100&sort=desc`
+    ]);
+  });
+
   it("throws a Cloudflare bypass error when a challenge response is detected", async () => {
     installFakeApplication({});
     const extension = new QiMangaExtension();

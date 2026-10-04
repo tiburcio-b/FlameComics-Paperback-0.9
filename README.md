@@ -11,13 +11,13 @@ Rebuildable Paperback 0.9 extension repository for:
 Open the install page on a device with Paperback installed:
 
 ```text
-https://btninja.github.io/FlameComics-Paperback-0.9/stable/
+https://tiburcio-b.github.io/FlameComics-Paperback-0.9/stable/
 ```
 
 Paperback repository base URL:
 
 ```text
-https://btninja.github.io/FlameComics-Paperback-0.9
+https://tiburcio-b.github.io/FlameComics-Paperback-0.9
 ```
 
 ## Commands

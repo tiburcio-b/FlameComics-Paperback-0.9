@@ -16,6 +16,7 @@ import {
   type QiSearchQuery,
   type QiSourceMangaRef
 } from "./qiMangaParser";
+import { decodePaperbackId } from "./paperbackIds";
 import {
   BasicRateLimiter,
   CloudflareError,
@@ -127,7 +128,9 @@ export class QiMangaExtension {
   }
 
   async getMangaDetails(mangaId: string) {
-    const payload = await this.fetchJson(`v1/series/${encodeURIComponent(mangaId)}`);
+    const payload = await this.fetchJson(
+      `v1/series/${encodeURIComponent(decodePaperbackId(mangaId))}`
+    );
     return mapQiMangaDetails(mangaId, payload);
   }
 
@@ -155,7 +158,7 @@ export class QiMangaExtension {
   async getChapterDetails(chapter: ChapterRef) {
     const slug = encodeURIComponent(qiSlugFromSourceManga(chapter.sourceManga));
     const payload = await this.fetchJson(
-      `v1/series/${slug}/chapters/${encodeURIComponent(chapter.chapterId)}`
+      `v1/series/${slug}/chapters/${encodeURIComponent(decodePaperbackId(chapter.chapterId))}`
     );
     return mapQiChapterDetails(chapter, payload);
   }

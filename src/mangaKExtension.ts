@@ -17,6 +17,8 @@ import {
   type MangaKSearchQuery,
   type MangaKSourceMangaRef
 } from "./mangaKParser";
+import { decodePaperbackId, encodeUrlPath } from "./paperbackIds";
+import { buildQueryString } from "./urlUtils";
 import {
   BasicRateLimiter,
   CloudflareError,
@@ -117,16 +119,14 @@ export class MangaKExtension {
   ) {
     const page = metadata?.page ?? 1;
     const { sort, window } = mangaKSortForSection(section.id);
-    const params = new URLSearchParams({
+    const query = buildQueryString({
       sort,
-      page: String(page),
-      limit: String(MANGAK_PAGE_SIZE)
+      page,
+      limit: MANGAK_PAGE_SIZE,
+      window
     });
-    if (window) {
-      params.set("window", window);
-    }
 
-    const payload = await this.fetchApi(`/titles/search?${params.toString()}`);
+    const payload = await this.fetchApi(`/titles/search?${query}`);
     return mapMangaKDiscoverSectionItems(section.id, payload, page);
   }
 
@@ -145,27 +145,25 @@ export class MangaKExtension {
   }
 
   async getChapterDetails(chapter: ChapterRef) {
-    const payload = await this.fetchPage(`/${chapter.chapterId}`);
+    const payload = await this.fetchPage(chapter.chapterId);
     return mapMangaKChapterDetails(chapter, payload);
   }
 
   async getSearchResults(query: MangaKSearchQuery, metadata?: MangaKPageMetadata) {
     const page = metadata?.page ?? 1;
-    const params = new URLSearchParams({
-      page: String(page),
-      limit: String(MANGAK_PAGE_SIZE)
-    });
 
     // The endpoint rejects punctuation and over-long queries.
     const title = (query.title ?? "")
       .replace(/[^\p{L}\p{N} ]/gu, "")
       .trim()
       .slice(0, MANGAK_QUERY_LIMIT);
-    if (title) {
-      params.set("q", title);
-    }
 
-    const payload = await this.fetchApi(`/titles/search?${params.toString()}`);
+    const search = buildQueryString({
+      page,
+      limit: MANGAK_PAGE_SIZE,
+      q: title
+    });
+    const payload = await this.fetchApi(`/titles/search?${search}`);
     return mapMangaKSearchResults(payload, page);
   }
 
@@ -224,7 +222,7 @@ export class MangaKExtension {
   }
 
   private async fetchSeriesPayload(mangaId: string) {
-    return this.fetchPage(`/${mangaId}`);
+    return this.fetchPage(mangaId);
   }
 
   private async fetchApi(path: string): Promise<unknown> {
@@ -237,9 +235,10 @@ export class MangaKExtension {
     return JSON.parse(response.body);
   }
 
-  private async fetchPage(path: string): Promise<unknown> {
+  /** `id` is a manga or chapter id: a site-relative path, possibly encoded. */
+  private async fetchPage(id: string): Promise<unknown> {
     const response = await this.schedule({
-      url: `${MANGAK_DOMAIN}${path}`,
+      url: `${MANGAK_DOMAIN}/${encodeUrlPath(decodePaperbackId(id))}`,
       method: "GET"
     });
 

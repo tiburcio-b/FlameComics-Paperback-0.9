@@ -87,6 +87,106 @@ describe("FlameComics extension runtime", () => {
     expect(state.get("buildId")).toBe("fresh");
   });
 
+  it("treats an HTML answer from a stale build id like a 404 and retries", async () => {
+    const htmlPage = `<!DOCTYPE html><html><head><title>Flame Comics</title></head></html>`;
+    const series = [{ series_id: 1, title: "Omniscient Reader", cover: "c.webp" }];
+    const routes = {
+      "https://flamecomics.xyz": {
+        body: `<script id="__NEXT_DATA__">{"buildId":"fresh"}</script>`
+      },
+      "https://flamecomics.xyz/_next/data/stale/browse.json": { body: htmlPage },
+      "https://flamecomics.xyz/_next/data/fresh/browse.json": {
+        body: JSON.stringify({ pageProps: { series } })
+      }
+    };
+    const { calls, state } = installFakeApplication(routes);
+    state.set("buildId", "stale");
+
+    const extension = new FlameComicsExtension();
+    const result = await extension.getSearchResults({ title: "omniscient" }, undefined);
+
+    expect(result.items.map((item) => item.mangaId)).toEqual(["1"]);
+    expect(calls).toEqual([
+      "https://flamecomics.xyz/_next/data/stale/browse.json",
+      "https://flamecomics.xyz",
+      "https://flamecomics.xyz/_next/data/fresh/browse.json"
+    ]);
+    expect(state.get("buildId")).toBe("fresh");
+  });
+
+  it("falls back to the server-rendered page when data routes keep answering HTML", async () => {
+    const htmlPage = `<!DOCTYPE html><html><head><title>Flame Comics</title></head></html>`;
+    const series = [{ series_id: 1, title: "Omniscient Reader", cover: "c.webp" }];
+    const browsePage = `<html><script id="__NEXT_DATA__" type="application/json">${JSON.stringify({
+      buildId: "fresh",
+      props: { pageProps: { series } }
+    })}</script></html>`;
+    const routes = {
+      "https://flamecomics.xyz": {
+        body: `<script id="__NEXT_DATA__">{"buildId":"fresh"}</script>`
+      },
+      "https://flamecomics.xyz/_next/data/fresh/browse.json": { body: htmlPage },
+      "https://flamecomics.xyz/browse": { body: browsePage }
+    };
+    const { calls } = installFakeApplication(routes);
+
+    const extension = new FlameComicsExtension();
+    const first = await extension.getSearchResults({ title: "omniscient" }, undefined);
+    expect(first.items.map((item) => item.mangaId)).toEqual(["1"]);
+    // The build id was read fresh, so there is nothing to retry with.
+    expect(calls).toEqual([
+      "https://flamecomics.xyz",
+      "https://flamecomics.xyz/_next/data/fresh/browse.json",
+      "https://flamecomics.xyz/browse"
+    ]);
+
+    // Later calls in the session skip straight to the page.
+    calls.length = 0;
+    await extension.getSearchResults({ title: "omniscient" }, undefined);
+    expect(calls).toEqual(["https://flamecomics.xyz/browse"]);
+  });
+
+  it("raises a Cloudflare bypass for a challenge page instead of a JSON error", async () => {
+    const challenge = `<!DOCTYPE html><html><head><title>Just a moment...</title></head>
+      <body><script>window._cf_chl_opt={cvId: '3'};</script></body></html>`;
+    installFakeApplication({
+      "https://flamecomics.xyz": { status: 403, body: challenge }
+    });
+
+    const extension = new FlameComicsExtension();
+    await expect(
+      extension.getSearchResults({ title: "omniscient" }, undefined)
+    ).rejects.toMatchObject({
+      type: "cloudflareError",
+      resolutionRequest: { url: "https://flamecomics.xyz", method: "GET" }
+    });
+  });
+
+  it("names the page it got when the site answers with something unexpected", async () => {
+    installFakeApplication({
+      "https://flamecomics.xyz": {
+        body: `<html><head><title>Site Maintenance</title></head></html>`
+      }
+    });
+
+    const extension = new FlameComicsExtension();
+    await expect(
+      extension.getSearchResults({ title: "omniscient" }, undefined)
+    ).rejects.toThrow(/Site Maintenance/);
+  });
+
+  it("marks data-route requests the way the site's own router does", async () => {
+    installFakeApplication({});
+    const extension = new FlameComicsExtension();
+
+    const request = await extension.interceptRequest({
+      url: "https://flamecomics.xyz/_next/data/fresh/browse.json",
+      method: "GET"
+    });
+
+    expect(request.headers).toMatchObject({ "x-nextjs-data": "1" });
+  });
+
   it("builds chapter details URLs from the chapter token in series JSON", async () => {
     const routes = {
       "https://flamecomics.xyz": {

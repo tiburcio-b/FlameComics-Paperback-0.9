@@ -4,7 +4,7 @@ import { ContentRating, SourceIntents } from "@paperback/types";
 export default {
   name: "FlameComics",
   description: "Extension that pulls manga, manhwa, and manhua from FlameComics.",
-  version: "1.0.6",
+  version: "1.0.7",
   icon: "icon.png",
   language: "en",
   contentRating: ContentRating.EVERYONE,

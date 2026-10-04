@@ -109,3 +109,20 @@ function asTrimmedString(value: unknown): string {
   }
   return "";
 }
+
+/**
+ * Build a query string the way `URLSearchParams` would (spaces as `+`). The
+ * Paperback runtime has no `URLSearchParams`; empty values are dropped.
+ */
+export function buildQueryString(
+  params: Record<string, string | number | undefined>
+): string {
+  return Object.entries(params)
+    .filter(([, value]) => value !== undefined && value !== "")
+    .map(([key, value]) => `${formEncode(key)}=${formEncode(String(value))}`)
+    .join("&");
+}
+
+function formEncode(value: string): string {
+  return encodeURIComponent(value).replace(/%20/g, "+");
+}

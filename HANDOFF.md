@@ -17,14 +17,14 @@ Local path:
 Remote:
 
 ```text
-git@github.com:btninja/FlameComics-Paperback-0.9.git
+https://github.com/tiburcio-b/FlameComics-Paperback-0.9
 ```
 
 Install page and Paperback repository base URL:
 
 ```text
-https://btninja.github.io/FlameComics-Paperback-0.9/stable/
-https://btninja.github.io/FlameComics-Paperback-0.9
+https://tiburcio-b.github.io/FlameComics-Paperback-0.9/stable/
+https://tiburcio-b.github.io/FlameComics-Paperback-0.9
 ```
 
 ## Project Layout
@@ -115,6 +115,33 @@ is what the endpoint accepts.
 
 Cover and page hosts rotate (`rx.<something>.org`). The parser keeps whatever
 absolute URL the payload carries rather than assuming a host.
+
+## Paperback Runtime Constraints
+
+The app's JavaScript runtime is not a browser or Node:
+
+- There is no `URLSearchParams` (or `URL`). Build query strings with
+  `buildQueryString` in `src/urlUtils.ts`, which matches its output.
+- Manga, chapter and tag ids may only contain ASCII letters, digits and
+  `._-@()[]%?#+=/&:`. Site slugs often carry apostrophes, so QiManga and MangaK
+  ids go through `encodePaperbackId` (`src/paperbackIds.ts`) and are decoded
+  with `decodePaperbackId` before they are put back into a request. Ids that
+  were already valid are left byte-for-byte unchanged so library entries keep
+  matching.
+
+## FlameComics Data Route Fallback
+
+The cached build id goes stale whenever Flame redeploys. A stale
+`_next/data/<buildId>/...json` route may answer 404 **or a 200 HTML page**; the
+latter used to surface in the app as `JSON Parse error: Unrecognized token '<'`.
+
+Any data-route answer that is not a JSON `pageProps` payload is now treated as
+stale: the build id is re-read from the homepage and the route retried. If that
+still fails, the extension reads the same `pageProps` out of the
+server-rendered page's `__NEXT_DATA__` (`/`, `/browse`, `/series/<id>`,
+`/series/<id>/<token>`) and keeps doing so for the rest of the session. A
+Cloudflare interstitial is raised as a `CloudflareError` so the app offers its
+bypass, and any other unexpected page is reported by its `<title>`.
 
 ## Verification
 

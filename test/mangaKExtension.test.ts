@@ -148,6 +148,58 @@ describe("MangaK extension runtime", () => {
     expect(results.metadata).toEqual({ page: 2 });
   });
 
+  it("builds search and discover URLs without URLSearchParams, which the app lacks", async () => {
+    const searchUrl = "https://api.mangak.io/titles/search?page=1&limit=24&q=solo";
+    const discoverUrl =
+      "https://api.mangak.io/titles/search?sort=latest&page=1&limit=24";
+    const empty = {
+      body: JSON.stringify({ data: { items: [], pagination: { has_next: false } } })
+    };
+    const { calls } = installFakeApplication({ [searchUrl]: empty, [discoverUrl]: empty });
+
+    const original = globalThis.URLSearchParams;
+    delete (globalThis as any).URLSearchParams;
+    try {
+      const extension = new MangaKExtension();
+      await extension.getSearchResults({ title: "solo" }, undefined);
+      await extension.getDiscoverSectionItems(
+        { id: "latest", title: "Latest Updates", type: 1 },
+        undefined
+      );
+    } finally {
+      globalThis.URLSearchParams = original;
+    }
+
+    expect(calls).toEqual([searchUrl, discoverUrl]);
+  });
+
+  it("encodes apostrophes in ids and requests the original path", async () => {
+    const searchUrl = "https://api.mangak.io/titles/search?page=1&limit=24&q=dan";
+    const detailsHtml = `<script id="__NEXT_DATA__">${JSON.stringify({
+      props: { pageProps: { initialManga: { id: "9", name: "Dan's Story" } } }
+    })}</script>`;
+    const { calls } = installFakeApplication({
+      [searchUrl]: {
+        body: JSON.stringify({
+          data: {
+            items: [{ id: "9", name: "Dan's Story", url: "/dan's-story" }],
+            pagination: { has_next: false }
+          }
+        })
+      },
+      "https://mangak.io/dan's-story": { body: detailsHtml }
+    });
+
+    const extension = new MangaKExtension();
+    const results = await extension.getSearchResults({ title: "dan" }, undefined);
+    const mangaId = results.items[0].mangaId;
+
+    expect(mangaId).toBe("dan%27s-story");
+    const details = await extension.getMangaDetails(mangaId);
+    expect(details.mangaInfo.primaryTitle).toBe("Dan's Story");
+    expect(calls).toEqual([searchUrl, "https://mangak.io/dan's-story"]);
+  });
+
   it("requests discover items with the section's sort and window", async () => {
     const url =
       "https://api.mangak.io/titles/search?sort=popular&page=1&limit=24&window=week";

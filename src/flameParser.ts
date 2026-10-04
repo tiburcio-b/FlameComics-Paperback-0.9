@@ -45,19 +45,91 @@ type FlameChapterPreview = {
 };
 
 export function extractBuildId(html: string): string {
-  const scriptMatch = html.match(
-    /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/
-  );
-  if (!scriptMatch?.[1]) {
+  const nextData = extractNextData(html);
+  if (!nextData) {
     throw new Error("Unable to find __NEXT_DATA__ script");
   }
 
-  const nextData = JSON.parse(decodeHtmlEntities(scriptMatch[1]));
   if (!nextData.buildId || typeof nextData.buildId !== "string") {
     throw new Error("Unable to find buildId in __NEXT_DATA__");
   }
 
   return nextData.buildId;
+}
+
+/**
+ * The `__NEXT_DATA__` document a server-rendered page embeds. Its
+ * `props.pageProps` is the same object the `_next/data` route returns as
+ * `pageProps`, which makes the page itself a fallback for that route.
+ */
+export function extractNextData(html: string): Record<string, any> | undefined {
+  const scriptMatch = html.match(
+    /<script[^>]+id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/
+  );
+  if (!scriptMatch?.[1]) {
+    return undefined;
+  }
+
+  // Script contents are raw text, so entities are only a fallback.
+  for (const candidate of [scriptMatch[1], decodeHtmlEntities(scriptMatch[1])]) {
+    const parsed = parseJson(candidate);
+    if (parsed && typeof parsed === "object") {
+      return parsed as Record<string, any>;
+    }
+  }
+
+  return undefined;
+}
+
+/**
+ * A `_next/data` payload, or `undefined` when the body is not one: an HTML
+ * page (a stale build id can be answered with one and a 200), an empty
+ * middleware redirect, or anything else without `pageProps`.
+ */
+export function parseNextDataPayload(body: string): { pageProps: Record<string, any> } | undefined {
+  const parsed = parseJson(body) as { pageProps?: unknown } | undefined;
+  const pageProps = parsed?.pageProps;
+  if (!pageProps || typeof pageProps !== "object") {
+    return undefined;
+  }
+  if ("__N_REDIRECT" in pageProps) {
+    return undefined;
+  }
+
+  return { pageProps: pageProps as Record<string, any> };
+}
+
+/** Cloudflare's interstitial, as opposed to a page that merely loads its scripts. */
+export function isCloudflareChallenge(html: string): boolean {
+  return (
+    /<title>\s*(Just a moment|Attention Required)/i.test(html) ||
+    html.includes("_cf_chl_opt") ||
+    html.includes("cf-browser-verification")
+  );
+}
+
+/** First bit of a response worth putting in an error message. */
+export function describeHtml(html: string): string {
+  const title = cleanText(html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]);
+  if (title) {
+    return `page "${title.slice(0, 80)}"`;
+  }
+
+  const snippet = cleanText(html).slice(0, 80);
+  return snippet ? `"${snippet}"` : "an empty response";
+}
+
+function parseJson(text: string): unknown {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return undefined;
+  }
+
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    return undefined;
+  }
 }
 
 export function mapDiscoverSectionList(payload: unknown) {
@@ -138,7 +210,10 @@ export function mapMangaDetails(mangaId: string, payload: unknown) {
     throw new Error(`Unable to parse FlameComics series ${mangaId}`);
   }
 
-  const tags = [cleanText(series.type), ...asArray<string>(series.tags).map(cleanText)]
+  const tags = [
+    cleanText(series.type),
+    ...asArray<string>(series.tags ?? series.categories).map(cleanText)
+  ]
     .filter(Boolean)
     .filter((tag, index, all) => all.indexOf(tag) === index);
 
@@ -160,7 +235,9 @@ export function mapMangaDetails(mangaId: string, payload: unknown) {
         {
           id: "genres",
           title: "Genres",
-          tags: tags.map((tag) => ({ id: slugify(tag), title: tag }))
+          tags: tags
+            .map((tag) => ({ id: slugify(tag), title: tag }))
+            .filter((tag) => tag.id)
         }
       ]
     }
