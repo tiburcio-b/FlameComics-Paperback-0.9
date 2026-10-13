@@ -104,7 +104,8 @@ describe("Flame parser", () => {
             type: "featuredCarouselItem",
             mangaId: "2",
             imageUrl: "https://cdn.flamecomics.xyz/uploads/images/carousel/carousel.webp",
-            title: "Omniscient Reader"
+            title: "Omniscient Reader",
+            contentRating: "SAFE"
           }
         ]
       },
@@ -119,7 +120,8 @@ describe("Flame parser", () => {
             imageUrl:
               "https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp",
             title: "Sword Clan",
-            subtitle: "592 views | Ongoing"
+            subtitle: "592 views | Ongoing",
+            contentRating: "SAFE"
           }
         ]
       },
@@ -134,7 +136,8 @@ describe("Flame parser", () => {
             imageUrl:
               "https://cdn.flamecomics.xyz/uploads/images/series/160/thumbnail.webp",
             title: "Moonlight",
-            subtitle: "Ongoing"
+            subtitle: "Ongoing",
+            contentRating: "SAFE"
           }
         ]
       }
@@ -364,6 +367,17 @@ describe("Flame parser", () => {
       mapSearchResults({ title: "레벨업" }, browsePayload).items.map((i) => i.mangaId)
     ).toEqual(["3"]);
   });
+  it("rates every discover item, which Paperback needs to draw carousel covers", () => {
+    // QiManga and MangaK always rated their carousel items and their covers
+    // showed; Flame's Popular and Latest did not, and theirs stayed blank.
+    const items = mapDiscoverSections(homePayload).flatMap((section) => section.items);
+
+    expect(items.length).toBeGreaterThan(0);
+    for (const item of items) {
+      expect(item.contentRating).toBe("SAFE");
+    }
+  });
+
   it("builds plain CDN covers with no query string", () => {
     // Taken from browse.json and the site's own <img> on 2026-10-13.
     const live = {

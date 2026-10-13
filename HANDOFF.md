@@ -171,11 +171,18 @@ chapter pages as
 
 The site itself appends a bare cache-buster (`?<last_edit>`, `?<release_date>`)
 and, since its Oct 2026 outage, wraps covers in
-`https://flamecomics.xyz/_next/image?url=<encoded cdn url>&w=720&q=75`. Both
-load in a browser, but in Paperback every cover URL carrying a query string
-stayed blank (1.0.7 with `?<last_edit>`, 1.0.8 with `/_next/image`) while the
-plain carousel banners beside them loaded. The CDN serves the same file
-without the query.
+`https://flamecomics.xyz/_next/image?url=<encoded cdn url>&w=720&q=75`. The
+extension uses neither; the plain form is the one verified in the app.
+
+**Discover items must carry `contentRating`.** Popular and Latest covers stayed
+blank in Paperback through three different URL forms while the same cover drew
+on the details page. The cause was that Flame's discover items had no
+`contentRating`; search results, details and every QiManga/MangaK carousel
+item had one and showed their covers. Every item Flame returns now sets
+`contentRating: "SAFE"`.
+
+Versions: after 1.0.9 FlameComics went to 1.1.0, not 1.0.10, in case the app
+compares versions as text.
 
 To see what the app actually requested for images, search `debug:images` in
 the FlameComics source. It lists the last 20 Flame image loads with status,

@@ -162,7 +162,8 @@ export function mapDiscoverSections(payload: unknown) {
           type: "featuredCarouselItem",
           mangaId: String(comic.series_id),
           imageUrl: carouselImageUrl(comic),
-          title: cleanText(comic.title)
+          title: cleanText(comic.title),
+          contentRating: "SAFE"
         }))
     },
     {
@@ -176,7 +177,10 @@ export function mapDiscoverSections(payload: unknown) {
           mangaId: String(comic.series_id),
           imageUrl: seriesCoverUrl(comic),
           title: cleanText(comic.title),
-          subtitle: previewSubtitle(comic)
+          subtitle: previewSubtitle(comic),
+          // Without a rating Paperback leaves carousel covers blank; search
+          // results and details, which always carried one, showed theirs.
+          contentRating: "SAFE"
         }))
     },
     {
@@ -190,7 +194,8 @@ export function mapDiscoverSections(payload: unknown) {
           mangaId: String(comic.series_id),
           imageUrl: seriesCoverUrl(comic),
           title: cleanText(comic.title),
-          subtitle: cleanText(comic.status)
+          subtitle: cleanText(comic.status),
+          contentRating: "SAFE"
         }))
     }
   ];
@@ -357,13 +362,9 @@ export function mapSearchResults(
 }
 
 /**
- * `${CDN}/uploads/images/series/<id>/<cover>`, with no query string.
- *
- * The site appends `?<last_edit>` and lately wraps covers in
- * `/_next/image?url=...`, and both of those load in a browser, but in
- * Paperback every cover URL carrying a query string stayed blank while the
- * plain carousel URLs beside them loaded. The CDN serves the same file
- * without the query.
+ * `${CDN}/uploads/images/series/<id>/<cover>`, with no query string. This is
+ * the form verified in the app (it draws the cover on the details page); the
+ * site's `?<last_edit>` and `/_next/image?url=...` forms are not needed.
  */
 export function seriesCoverUrl(series: FlameSeriesPreview): string {
   const seriesId = series.series_id;

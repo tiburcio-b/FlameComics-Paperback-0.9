@@ -15,7 +15,7 @@ export const sourceMetadata = {
   id: "FlameComics",
   name: "FlameComics",
   description: "Extension that pulls manga, manhwa, and manhua from FlameComics.",
-  version: "1.0.9",
+  version: "1.1.0",
   icon: "icon.png",
   language: "en",
   contentRating: "SAFE",
