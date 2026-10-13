@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { FlameComicsExtension } from "../src/extension";
+import { FlameComicsExtension, FlameComicsRateLimiter } from "../src/extension";
 
 const textEncoder = new TextEncoder();
 
@@ -275,6 +275,34 @@ describe("FlameComics extension runtime", () => {
     const second = await extension.getSearchResults({ title: "series" }, { page: 2 });
     expect(second.items).toHaveLength(2);
     expect(second.metadata).toBeUndefined();
+  });
+
+  it("lets cover and page images past the rate limiter", async () => {
+    installFakeApplication({});
+    let throttled = 0;
+    const limiter = new FlameComicsRateLimiter("test", {
+      numberOfRequests: 1,
+      bufferInterval: 60,
+      ignoreImages: true
+    });
+    (limiter as any).incrementRequestCount = async () => {
+      throttled += 1;
+    };
+
+    const cover =
+      "https://flamecomics.xyz/_next/image?url=https%3A%2F%2Fcdn.flamecomics.xyz%2Fuploads%2Fimages%2Fseries%2F165%2Fthumbnail.webp%3F1786358505&w=720&q=75";
+    await limiter.interceptRequest({ url: cover, method: "GET" });
+    await limiter.interceptRequest({
+      url: "https://cdn.flamecomics.xyz/uploads/images/series/165/9ead4fdb0be9dedf/30YRS-1-00.jpg?1785009229",
+      method: "GET"
+    });
+    expect(throttled).toBe(0);
+
+    await limiter.interceptRequest({
+      url: "https://flamecomics.xyz/_next/data/fresh/browse.json",
+      method: "GET"
+    });
+    expect(throttled).toBe(1);
   });
 
   it("sends a referer and user agent without a malformed origin header", async () => {

@@ -5,6 +5,7 @@ import {
   isCloudflareChallenge,
   parseNextDataPayload,
   findChapterToken,
+  isFlameImageUrl,
   mapChapterDetails,
   mapChapters,
   mapDiscoverSectionItems,
@@ -78,6 +79,21 @@ class FlameComicsInterceptor extends PaperbackInterceptor {
   }
 }
 
+/**
+ * The stock limiter only recognises images by a `.webp?`-style ending, which
+ * the encoded `/_next/image?url=...` cover URLs do not have. Without this every
+ * thumbnail would queue behind the 2-per-2s page limit.
+ */
+export class FlameComicsRateLimiter extends BasicRateLimiter {
+  async interceptRequest(request: Request): Promise<Request> {
+    if (isFlameImageUrl(request.url)) {
+      return request;
+    }
+
+    return super.interceptRequest(request);
+  }
+}
+
 export class FlameComicsExtension {
   private buildId = "";
   /**
@@ -86,7 +102,7 @@ export class FlameComicsExtension {
    */
   private dataRoutesUnavailable = false;
   private cookieStorageInterceptor?: CookieStorageInterceptor;
-  private globalRateLimiter = new BasicRateLimiter("flamecomics-rate-limiter", {
+  private globalRateLimiter = new FlameComicsRateLimiter("flamecomics-rate-limiter", {
     numberOfRequests: 2,
     bufferInterval: 2,
     ignoreImages: true

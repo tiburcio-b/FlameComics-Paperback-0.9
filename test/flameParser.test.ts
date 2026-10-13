@@ -6,7 +6,9 @@ import {
   mapChapters,
   mapDiscoverSections,
   mapMangaDetails,
-  mapSearchResults
+  mapSearchResults,
+  isFlameImageUrl,
+  seriesCoverUrl
 } from "../src/flameParser";
 
 const homePayload = {
@@ -82,6 +84,11 @@ const seriesPayload = {
   }
 };
 
+/** Covers are served through the site's image optimizer, as its pages do. */
+function optimized(cdnUrl: string): string {
+  return `https://flamecomics.xyz/_next/image?url=${encodeURIComponent(cdnUrl)}&w=720&q=75`;
+}
+
 describe("Flame parser", () => {
   it("extracts the Next.js build id from homepage HTML", () => {
     const html = `<script id="__NEXT_DATA__" type="application/json">{"buildId":"abc123"}</script>`;
@@ -115,7 +122,7 @@ describe("Flame parser", () => {
             type: "simpleCarouselItem",
             mangaId: "154",
             imageUrl:
-              "https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp?1781623014",
+              optimized("https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp?1781623014"),
             title: "Sword Clan",
             subtitle: "592 views | Ongoing"
           }
@@ -130,7 +137,7 @@ describe("Flame parser", () => {
             type: "simpleCarouselItem",
             mangaId: "160",
             imageUrl:
-              "https://cdn.flamecomics.xyz/uploads/images/series/160/thumbnail.webp?1781623015",
+              optimized("https://cdn.flamecomics.xyz/uploads/images/series/160/thumbnail.webp?1781623015"),
             title: "Moonlight",
             subtitle: "Ongoing"
           }
@@ -147,7 +154,7 @@ describe("Flame parser", () => {
         primaryTitle: "Sword Clan",
         secondaryTitles: ["Alt Sword"],
         thumbnailUrl:
-          "https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp?1781623014",
+          optimized("https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp?1781623014"),
         author: "Author One",
         artist: "Artist One, Artist Two",
         synopsis: "A clean synopsis.",
@@ -246,7 +253,7 @@ describe("Flame parser", () => {
         {
           mangaId: "1",
           imageUrl:
-            "https://cdn.flamecomics.xyz/uploads/images/series/1/thumbnail.webp?1781623014",
+            optimized("https://cdn.flamecomics.xyz/uploads/images/series/1/thumbnail.webp?1781623014"),
           title: "Solo Leveling",
           subtitle: "Completed",
           contentRating: "SAFE"
@@ -361,5 +368,48 @@ describe("Flame parser", () => {
     expect(
       mapSearchResults({ title: "레벨업" }, browsePayload).items.map((i) => i.mangaId)
     ).toEqual(["3"]);
+  });
+  it("serves covers through /_next/image exactly as the live site requests them", () => {
+    // Taken from browse.json and the site's own <img> on 2026-10-13.
+    const live = {
+      series_id: 165,
+      title: "30 Years Have Passed Since the Prologue",
+      cover: "thumbnail.webp",
+      last_edit: 1786358505,
+      likes: 89,
+      status: "Ongoing"
+    };
+
+    expect(seriesCoverUrl(live)).toBe(
+      "https://flamecomics.xyz/_next/image?url=https%3A%2F%2Fcdn.flamecomics.xyz%2Fuploads%2Fimages%2Fseries%2F165%2Fthumbnail.webp%3F1786358505&w=720&q=75"
+    );
+    expect(isFlameImageUrl(seriesCoverUrl(live))).toBe(true);
+
+    const popular = mapDiscoverSections({
+      pageProps: { popularEntries: { blocks: [{ series: [live] }] } }
+    }).find((section) => section.id === "popular");
+    expect(popular?.items[0]).toMatchObject({
+      imageUrl: seriesCoverUrl(live),
+      subtitle: "89 likes | Ongoing"
+    });
+  });
+
+  it("keeps chapter pages on the CDN, which is how the reader loads them", () => {
+    const details = mapChapterDetails("165", "9ead4fdb0be9dedf", {
+      pageProps: {
+        chapter: {
+          series_id: 165,
+          token: "9ead4fdb0be9dedf",
+          release_date: 1785009229,
+          images: { 0: { name: "30YRS-1-00.jpg" } }
+        }
+      }
+    });
+
+    expect(details.pages).toEqual([
+      "https://cdn.flamecomics.xyz/uploads/images/series/165/9ead4fdb0be9dedf/30YRS-1-00.jpg?1785009229"
+    ]);
+    expect(isFlameImageUrl(details.pages[0])).toBe(true);
+    expect(isFlameImageUrl("https://flamecomics.xyz/_next/data/x/browse.json")).toBe(false);
   });
 });

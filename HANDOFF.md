@@ -164,9 +164,21 @@ chapter away.
 
 ### Cover and search notes
 
-FlameComics cover URLs are
-`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<cover>?<last_edit>`
-and chapter pages are
+FlameComics covers live at
+`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<cover>?<last_edit>`,
+but since Flame's Oct 2026 outage the site's own pages load them through
+Next's image optimizer on the main host, and so does the extension:
+`https://flamecomics.xyz/_next/image?url=<encoded cdn url>&w=720&q=75`.
+`w` and `q` must be values the site requests (srcset widths 384, 480, 720,
+1080, 1920; q 75 or 100) or the optimizer rejects them. The direct CDN URLs
+stopped loading as thumbnails in Paperback, though they still answer in a
+browser.
+
+Those optimizer URLs do not end in `.webp?`, so Paperback's stock
+`BasicRateLimiter` would throttle every thumbnail; `FlameComicsRateLimiter`
+lets anything from the CDN or `/_next/image` through.
+
+Chapter pages still load straight from the CDN, as on the site:
 `https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<token>/<name>?<release_date>`.
 The bare trailing query value is a cache-buster, not a named parameter.
 
@@ -176,8 +188,9 @@ catalogue, and the extension filters and pages it locally over `title` plus
 `altTitles`. Sending a `search=` parameter risks a 404 from the data route,
 which surfaces in the app as a failed search.
 
-On Flame, `author` and `artist` are lists, and series carry `views` (there is
-no `likes` field).
+On Flame, `author` and `artist` are lists. Series now carry `likes` and
+`popularityRank` rather than `views`, and `categories` rather than `tags`; the
+parser reads either.
 
 Requests carry a `Referer` and user agent. `Origin` is only sent for QiManga's
 cross-origin API calls; browsers never send it for image loads, and sending it

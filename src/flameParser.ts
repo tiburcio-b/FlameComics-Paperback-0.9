@@ -5,6 +5,13 @@ export const FLAME_CDN_DOMAIN = "https://cdn.flamecomics.xyz";
 export const IMAGE_SERIES_PATH = "uploads/images/series";
 export const IMAGE_CAROUSEL_PATH = "uploads/images/carousel";
 export const SEARCH_PAGE_SIZE = 20;
+/**
+ * Flame's own pages load covers through Next's image optimizer on the main
+ * host (`/_next/image?url=<cdn url>&w=720&q=75`), not straight from the CDN.
+ * These are values the site itself requests; the optimizer rejects others.
+ */
+export const COVER_IMAGE_WIDTH = 720;
+export const COVER_IMAGE_QUALITY = 75;
 export const DiscoverSectionType = {
   featured: 0,
   simpleCarousel: 1
@@ -28,6 +35,7 @@ type FlameSeriesPreview = {
   title?: string;
   altTitles?: string[];
   views?: number;
+  likes?: number;
   status?: string;
   type?: string;
   cover?: string;
@@ -358,7 +366,10 @@ export function mapSearchResults(
   };
 }
 
-/** `${CDN}/uploads/images/series/<id>/<cover>?<last_edit>` */
+/**
+ * `${CDN}/uploads/images/series/<id>/<cover>?<last_edit>`, served the way the
+ * site serves it: through `/_next/image` on the main host.
+ */
 export function seriesCoverUrl(series: FlameSeriesPreview): string {
   const seriesId = series.series_id;
   const cover = cleanUrl(series.cover);
@@ -366,9 +377,25 @@ export function seriesCoverUrl(series: FlameSeriesPreview): string {
     return "";
   }
 
-  return withVersion(
-    seriesImageUrl(String(seriesId), cover),
-    series.last_edit
+  return optimizedImageUrl(
+    withVersion(seriesImageUrl(String(seriesId), cover), series.last_edit)
+  );
+}
+
+/** Wrap a CDN image in the site's `/_next/image` optimizer, as its pages do. */
+export function optimizedImageUrl(url: string): string {
+  if (!url.startsWith(`${FLAME_CDN_DOMAIN}/`)) {
+    return url;
+  }
+
+  return `${FLAME_DOMAIN}/_next/image?url=${encodeURIComponent(url)}&w=${COVER_IMAGE_WIDTH}&q=${COVER_IMAGE_QUALITY}`;
+}
+
+/** Image loads, which must bypass the request rate limiter. */
+export function isFlameImageUrl(url: string): boolean {
+  return (
+    url.startsWith(`${FLAME_CDN_DOMAIN}/`) ||
+    url.startsWith(`${FLAME_DOMAIN}/_next/image?`)
   );
 }
 
@@ -438,8 +465,16 @@ function chapterIdFor(chapter: FlameChapterPreview): string {
 }
 
 function previewSubtitle(comic: FlameSeriesPreview): string {
+  // Series used to carry `views`; they now carry `likes` instead.
+  const popularity =
+    comic.views != null
+      ? `${comic.views} views`
+      : comic.likes != null
+        ? `${comic.likes} likes`
+        : "";
+
   return [
-    comic.views != null ? `${comic.views} views` : "",
+    popularity,
     cleanText(comic.status)
   ]
     .filter(Boolean)
