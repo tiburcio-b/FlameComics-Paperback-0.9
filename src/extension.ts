@@ -27,6 +27,17 @@ import {
 } from "@paperback/types";
 
 const BUILD_ID_STATE_KEY = "buildId";
+const IMAGE_LOG_STATE_KEY = "imageLog";
+const IMAGE_LOG_SIZE = 20;
+/** Searching this lists the last image loads, as the app actually made them. */
+export const IMAGE_LOG_QUERY = "debug:images";
+
+type ImageLogEntry = {
+  url: string;
+  status?: number;
+  type?: string;
+  bytes?: number;
+};
 
 type FetchedPage = {
   request: Request;
@@ -48,6 +59,10 @@ type ChapterRef = {
 
 class FlameComicsInterceptor extends PaperbackInterceptor {
   async interceptRequest(request: Request): Promise<Request> {
+    if (isFlameImageUrl(request.url)) {
+      recordImageLoad({ url: request.url });
+    }
+
     return {
       ...request,
       headers: {
@@ -65,6 +80,15 @@ class FlameComicsInterceptor extends PaperbackInterceptor {
     response: Response,
     data: ArrayBuffer
   ): Promise<ArrayBuffer> {
+    if (isFlameImageUrl(request.url)) {
+      recordImageLoad({
+        url: request.url,
+        status: response.status,
+        type: headerValue(response.headers, "content-type") ?? response.mimeType,
+        bytes: data.byteLength
+      });
+    }
+
     if (headerValue(response.headers, "cf-mitigated") === "challenge") {
       throw new CloudflareError({
         url: request.url,
@@ -160,6 +184,10 @@ export class FlameComicsExtension {
   }
 
   async getSearchResults(query: SearchQuery, metadata?: SearchPageMetadata) {
+    if ((query.title ?? "").trim().toLowerCase() === IMAGE_LOG_QUERY) {
+      return { items: imageLogResults(), metadata: undefined };
+    }
+
     const payload = await this.fetchNextData("browse.json", "browse");
     return mapSearchResults(query, payload, metadata?.page ?? 1);
   }
@@ -342,6 +370,49 @@ export class FlameComicsExtension {
       `FlameComics sent ${describeHtml(response.body)} instead of series data for ${response.request.url}`
     );
   }
+}
+
+/**
+ * Keep the last few image loads so `debug:images` can show what the app really
+ * requested and got back. A request with no status never got a response.
+ */
+function recordImageLoad(entry: ImageLogEntry) {
+  try {
+    const stored = Application.getState(IMAGE_LOG_STATE_KEY);
+    const log: ImageLogEntry[] = Array.isArray(stored) ? stored : [];
+    const pending = log.findIndex(
+      (logged) => logged.url === entry.url && logged.status === undefined
+    );
+
+    if (entry.status !== undefined && pending !== -1) {
+      log[pending] = entry;
+    } else {
+      log.push(entry);
+    }
+
+    Application.setState(log.slice(-IMAGE_LOG_SIZE), IMAGE_LOG_STATE_KEY);
+  } catch {
+    // Diagnostics must never break an image load.
+  }
+}
+
+function imageLogResults() {
+  const stored = Application.getState(IMAGE_LOG_STATE_KEY);
+  const log: ImageLogEntry[] = Array.isArray(stored) ? stored : [];
+
+  return log
+    .slice()
+    .reverse()
+    .map((entry, index) => ({
+      mangaId: `debug-image-${index}`,
+      // Rendering the logged URL here also shows whether the app can draw it.
+      imageUrl: entry.url,
+      title:
+        entry.status === undefined
+          ? "no response"
+          : `${entry.status} ${entry.type ?? "?"} ${Math.round((entry.bytes ?? 0) / 1024)} KB`,
+      subtitle: entry.url.replace(/^https:\/\/(cdn\.)?flamecomics\.xyz/, "")
+    }));
 }
 
 function headerValue(headers: Record<string, string> | undefined, name: string) {

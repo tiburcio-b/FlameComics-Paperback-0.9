@@ -305,6 +305,48 @@ describe("FlameComics extension runtime", () => {
     expect(throttled).toBe(1);
   });
 
+  it("logs image loads and lists them for the debug:images search", async () => {
+    installFakeApplication({});
+    const extension = new FlameComicsExtension();
+    const loaded = "https://cdn.flamecomics.xyz/uploads/images/series/136/thumbnail.png";
+    const unanswered = "https://cdn.flamecomics.xyz/uploads/images/series/23/thumbnail.png";
+
+    await extension.interceptRequest({ url: loaded, method: "GET" });
+    await extension.interceptResponse(
+      { url: loaded, method: "GET" },
+      {
+        url: loaded,
+        status: 200,
+        headers: { "Content-Type": "image/png" },
+        cookies: []
+      },
+      new ArrayBuffer(2048)
+    );
+    await extension.interceptRequest({ url: unanswered, method: "GET" });
+    // Page requests are not images and stay out of the log.
+    await extension.interceptRequest({
+      url: "https://flamecomics.xyz/_next/data/fresh/browse.json",
+      method: "GET"
+    });
+
+    const results = await extension.getSearchResults({ title: " Debug:Images " }, undefined);
+
+    expect(results.items).toEqual([
+      {
+        mangaId: "debug-image-0",
+        imageUrl: unanswered,
+        title: "no response",
+        subtitle: "/uploads/images/series/23/thumbnail.png"
+      },
+      {
+        mangaId: "debug-image-1",
+        imageUrl: loaded,
+        title: "200 image/png 2 KB",
+        subtitle: "/uploads/images/series/136/thumbnail.png"
+      }
+    ]);
+  });
+
   it("sends a referer and user agent without a malformed origin header", async () => {
     installFakeApplication({});
     const extension = new FlameComicsExtension();

@@ -164,23 +164,26 @@ chapter away.
 
 ### Cover and search notes
 
-FlameComics covers live at
-`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<cover>?<last_edit>`,
-but since Flame's Oct 2026 outage the site's own pages load them through
-Next's image optimizer on the main host, and so does the extension:
-`https://flamecomics.xyz/_next/image?url=<encoded cdn url>&w=720&q=75`.
-`w` and `q` must be values the site requests (srcset widths 384, 480, 720,
-1080, 1920; q 75 or 100) or the optimizer rejects them. The direct CDN URLs
-stopped loading as thumbnails in Paperback, though they still answer in a
-browser.
+FlameComics covers are built as plain CDN URLs with **no query string**:
+`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<cover>`, and
+chapter pages as
+`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<token>/<name>`.
 
-Those optimizer URLs do not end in `.webp?`, so Paperback's stock
-`BasicRateLimiter` would throttle every thumbnail; `FlameComicsRateLimiter`
-lets anything from the CDN or `/_next/image` through.
+The site itself appends a bare cache-buster (`?<last_edit>`, `?<release_date>`)
+and, since its Oct 2026 outage, wraps covers in
+`https://flamecomics.xyz/_next/image?url=<encoded cdn url>&w=720&q=75`. Both
+load in a browser, but in Paperback every cover URL carrying a query string
+stayed blank (1.0.7 with `?<last_edit>`, 1.0.8 with `/_next/image`) while the
+plain carousel banners beside them loaded. The CDN serves the same file
+without the query.
 
-Chapter pages still load straight from the CDN, as on the site:
-`https://cdn.flamecomics.xyz/uploads/images/series/<series_id>/<token>/<name>?<release_date>`.
-The bare trailing query value is a cache-buster, not a named parameter.
+To see what the app actually requested for images, search `debug:images` in
+the FlameComics source. It lists the last 20 Flame image loads with status,
+content type and size ("no response" means the request never got one), and
+renders each URL as the result's thumbnail.
+
+`FlameComicsRateLimiter` lets CDN and `/_next/image` requests past the
+2-per-2s page limit regardless of how the URL ends.
 
 FlameComics search reads `_next/data/<buildId>/browse.json` with **no** query
 parameters: that route is a prerendered document containing the whole

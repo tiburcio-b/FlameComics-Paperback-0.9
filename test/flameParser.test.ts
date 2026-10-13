@@ -84,11 +84,6 @@ const seriesPayload = {
   }
 };
 
-/** Covers are served through the site's image optimizer, as its pages do. */
-function optimized(cdnUrl: string): string {
-  return `https://flamecomics.xyz/_next/image?url=${encodeURIComponent(cdnUrl)}&w=720&q=75`;
-}
-
 describe("Flame parser", () => {
   it("extracts the Next.js build id from homepage HTML", () => {
     const html = `<script id="__NEXT_DATA__" type="application/json">{"buildId":"abc123"}</script>`;
@@ -122,7 +117,7 @@ describe("Flame parser", () => {
             type: "simpleCarouselItem",
             mangaId: "154",
             imageUrl:
-              optimized("https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp?1781623014"),
+              "https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp",
             title: "Sword Clan",
             subtitle: "592 views | Ongoing"
           }
@@ -137,7 +132,7 @@ describe("Flame parser", () => {
             type: "simpleCarouselItem",
             mangaId: "160",
             imageUrl:
-              optimized("https://cdn.flamecomics.xyz/uploads/images/series/160/thumbnail.webp?1781623015"),
+              "https://cdn.flamecomics.xyz/uploads/images/series/160/thumbnail.webp",
             title: "Moonlight",
             subtitle: "Ongoing"
           }
@@ -154,7 +149,7 @@ describe("Flame parser", () => {
         primaryTitle: "Sword Clan",
         secondaryTitles: ["Alt Sword"],
         thumbnailUrl:
-          optimized("https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp?1781623014"),
+          "https://cdn.flamecomics.xyz/uploads/images/series/154/thumbnail.webp",
         author: "Author One",
         artist: "Artist One, Artist Two",
         synopsis: "A clean synopsis.",
@@ -220,8 +215,8 @@ describe("Flame parser", () => {
       id: "10",
       mangaId: "154",
       pages: [
-        "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/001.webp?1781623014",
-        "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/002.webp?1781623014"
+        "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/001.webp",
+        "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/002.webp"
       ]
     });
   });
@@ -253,7 +248,7 @@ describe("Flame parser", () => {
         {
           mangaId: "1",
           imageUrl:
-            optimized("https://cdn.flamecomics.xyz/uploads/images/series/1/thumbnail.webp?1781623014"),
+            "https://cdn.flamecomics.xyz/uploads/images/series/1/thumbnail.webp",
           title: "Solo Leveling",
           subtitle: "Completed",
           contentRating: "SAFE"
@@ -345,9 +340,9 @@ describe("Flame parser", () => {
     };
 
     expect(mapChapterDetails("154", "chapter-token", chapterPayload).pages).toEqual([
-      "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/002.webp?5",
-      "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/003.webp?5",
-      "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/011.webp?5"
+      "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/002.webp",
+      "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/003.webp",
+      "https://cdn.flamecomics.xyz/uploads/images/series/154/chapter-token/011.webp"
     ]);
   });
   it("still matches titles that normalisation would strip to nothing", () => {
@@ -369,7 +364,7 @@ describe("Flame parser", () => {
       mapSearchResults({ title: "레벨업" }, browsePayload).items.map((i) => i.mangaId)
     ).toEqual(["3"]);
   });
-  it("serves covers through /_next/image exactly as the live site requests them", () => {
+  it("builds plain CDN covers with no query string", () => {
     // Taken from browse.json and the site's own <img> on 2026-10-13.
     const live = {
       series_id: 165,
@@ -380,8 +375,10 @@ describe("Flame parser", () => {
       status: "Ongoing"
     };
 
+    // Same shape as the carousel banners, which load in the app; every cover
+    // URL carrying a query string stayed blank there.
     expect(seriesCoverUrl(live)).toBe(
-      "https://flamecomics.xyz/_next/image?url=https%3A%2F%2Fcdn.flamecomics.xyz%2Fuploads%2Fimages%2Fseries%2F165%2Fthumbnail.webp%3F1786358505&w=720&q=75"
+      "https://cdn.flamecomics.xyz/uploads/images/series/165/thumbnail.webp"
     );
     expect(isFlameImageUrl(seriesCoverUrl(live))).toBe(true);
 
@@ -394,7 +391,7 @@ describe("Flame parser", () => {
     });
   });
 
-  it("keeps chapter pages on the CDN, which is how the reader loads them", () => {
+  it("keeps chapter pages on the CDN without the release-date query", () => {
     const details = mapChapterDetails("165", "9ead4fdb0be9dedf", {
       pageProps: {
         chapter: {
@@ -407,7 +404,7 @@ describe("Flame parser", () => {
     });
 
     expect(details.pages).toEqual([
-      "https://cdn.flamecomics.xyz/uploads/images/series/165/9ead4fdb0be9dedf/30YRS-1-00.jpg?1785009229"
+      "https://cdn.flamecomics.xyz/uploads/images/series/165/9ead4fdb0be9dedf/30YRS-1-00.jpg"
     ]);
     expect(isFlameImageUrl(details.pages[0])).toBe(true);
     expect(isFlameImageUrl("https://flamecomics.xyz/_next/data/x/browse.json")).toBe(false);

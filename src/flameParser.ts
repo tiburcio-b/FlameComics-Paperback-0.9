@@ -1,17 +1,10 @@
-import { resolveImageUrl, withVersion } from "./urlUtils";
+import { resolveImageUrl } from "./urlUtils";
 
 export const FLAME_DOMAIN = "https://flamecomics.xyz";
 export const FLAME_CDN_DOMAIN = "https://cdn.flamecomics.xyz";
 export const IMAGE_SERIES_PATH = "uploads/images/series";
 export const IMAGE_CAROUSEL_PATH = "uploads/images/carousel";
 export const SEARCH_PAGE_SIZE = 20;
-/**
- * Flame's own pages load covers through Next's image optimizer on the main
- * host (`/_next/image?url=<cdn url>&w=720&q=75`), not straight from the CDN.
- * These are values the site itself requests; the optimizer rejects others.
- */
-export const COVER_IMAGE_WIDTH = 720;
-export const COVER_IMAGE_QUALITY = 75;
 export const DiscoverSectionType = {
   featured: 0,
   simpleCarousel: 1
@@ -307,10 +300,7 @@ export function mapChapterDetails(
     id: chapterIdFor(chapter),
     mangaId,
     pages: chapterImageNames(chapter.images).map((name) =>
-      withVersion(
-        seriesChapterImageUrl(seriesId, chapterToken, name),
-        chapter.release_date
-      )
+      seriesChapterImageUrl(seriesId, chapterToken, name)
     )
   };
 }
@@ -367,8 +357,13 @@ export function mapSearchResults(
 }
 
 /**
- * `${CDN}/uploads/images/series/<id>/<cover>?<last_edit>`, served the way the
- * site serves it: through `/_next/image` on the main host.
+ * `${CDN}/uploads/images/series/<id>/<cover>`, with no query string.
+ *
+ * The site appends `?<last_edit>` and lately wraps covers in
+ * `/_next/image?url=...`, and both of those load in a browser, but in
+ * Paperback every cover URL carrying a query string stayed blank while the
+ * plain carousel URLs beside them loaded. The CDN serves the same file
+ * without the query.
  */
 export function seriesCoverUrl(series: FlameSeriesPreview): string {
   const seriesId = series.series_id;
@@ -377,18 +372,7 @@ export function seriesCoverUrl(series: FlameSeriesPreview): string {
     return "";
   }
 
-  return optimizedImageUrl(
-    withVersion(seriesImageUrl(String(seriesId), cover), series.last_edit)
-  );
-}
-
-/** Wrap a CDN image in the site's `/_next/image` optimizer, as its pages do. */
-export function optimizedImageUrl(url: string): string {
-  if (!url.startsWith(`${FLAME_CDN_DOMAIN}/`)) {
-    return url;
-  }
-
-  return `${FLAME_DOMAIN}/_next/image?url=${encodeURIComponent(url)}&w=${COVER_IMAGE_WIDTH}&q=${COVER_IMAGE_QUALITY}`;
+  return seriesImageUrl(String(seriesId), cover);
 }
 
 /** Image loads, which must bypass the request rate limiter. */
